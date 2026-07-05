@@ -202,7 +202,7 @@ export default function App() {
       </section>
 
       <section className="block">
-        <div className="section-eyebrow">AI Coach</div>
+        <div className="section-eyebrow">COCO AI</div>
         <div className="section-title">Ask for saving advice</div>
         <CoachPanel userId={user.id} year={selectedYear} month={selectedMonth} />
       </section>
