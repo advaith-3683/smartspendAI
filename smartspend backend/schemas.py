@@ -94,9 +94,67 @@ class CoachResponse(BaseModel):
     advice: str
 
 
+class ChatMessage(BaseModel):
+    role: str  # "user" | "model"
+    content: str
+
+
+class ChatMessageOut(BaseModel):
+    role: str
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CoachChatRequest(BaseModel):
+    message: str
+
+
+class CoachChatResponse(BaseModel):
+    reply: str
+
+
 class AnomalyItem(BaseModel):
     category: str
     type: str
+    message: str
+
+
+class SavingsGoalRequest(BaseModel):
+    target_amount: float
+    months: int
+
+
+class SavingsGoalCategoryPlan(BaseModel):
+    category: str
+    current_monthly_avg: float
+    target_monthly: float
+    cut_amount: float
+    cut_percent: float
+
+
+class SavingsGoalResponse(BaseModel):
+    target_amount: float
+    months: int
+    monthly_savings_needed: float
+    current_monthly_income: float
+    current_baseline_spend: float
+    current_monthly_savings: float
+    additional_cut_needed: float
+    achievable: bool
+    categories: list[SavingsGoalCategoryPlan]
+    advice: str
+
+
+class SubscriptionItem(BaseModel):
+    merchant: str
+    category: str
+    average_amount: float
+    occurrences: int
+    months_seen: int
+    last_charged: date
     message: str
 
 
@@ -152,3 +210,20 @@ class BillStatus(BaseModel):
     due_day: int
     status: str  # "paid" | "due" | "overdue"
     paid_date: Optional[date] = None
+
+
+class WeeklyDigestCategoryAmount(BaseModel):
+    category: str
+    amount: float
+
+
+class WeeklyDigestResponse(BaseModel):
+    period_start: date
+    period_end: date
+    total_this_week: float
+    total_last_week: float
+    top_categories: list[WeeklyDigestCategoryAmount]
+    anomalies: list[AnomalyItem]
+    subscriptions: list[SubscriptionItem]
+    bills_due_soon: list[BillStatus]
+    digest_text: str

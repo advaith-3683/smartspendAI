@@ -11,6 +11,8 @@ import BurnAlertBanner from './components/BurnAlertBanner.jsx'
 import MonthNav from './components/MonthNav.jsx'
 import ImportPanel from './components/ImportPanel.jsx'
 import BillsPanel from './components/BillsPanel.jsx'
+import SavingsGoalPlanner from './components/SavingsGoalPlanner.jsx'
+import WeeklyDigest from './components/WeeklyDigest.jsx'
 
 const now = new Date()
 const TODAY_YEAR = now.getFullYear()
@@ -100,7 +102,7 @@ export default function App() {
       .then(setPace)
       .catch((err) => setLoadError(err.message))
     api
-      .listTransactions(user.id)
+      .listTransactions(user.id, selectedYear, selectedMonth)
       .then(setTransactions)
       .catch((err) => setLoadError(err.message))
     api
@@ -185,6 +187,8 @@ export default function App() {
         <div className="section-title">Add an expense</div>
         <TransactionForm
           categories={categories}
+          year={selectedYear}
+          month={selectedMonth}
           onSubmit={(data) => api.createTransaction({ user_id: user.id, ...data }).then(refreshData)}
         />
       </section>
@@ -202,9 +206,21 @@ export default function App() {
       </section>
 
       <section className="block">
+        <div className="section-eyebrow">Goals</div>
+        <div className="section-title">Plan a savings goal</div>
+        <SavingsGoalPlanner userId={user.id} />
+      </section>
+
+      <section className="block">
         <div className="section-eyebrow">COCO AI</div>
-        <div className="section-title">Ask for saving advice</div>
+        <div className="section-title">Chat live with your money coach</div>
         <CoachPanel userId={user.id} year={selectedYear} month={selectedMonth} />
+      </section>
+
+      <section className="block">
+        <div className="section-eyebrow">COCO AI</div>
+        <div className="section-title">Your weekly check-in</div>
+        <WeeklyDigest userId={user.id} />
       </section>
 
       <section className="block">

@@ -21,7 +21,8 @@ export const api = {
     request(`/budgets/${userId}?year=${year}&month=${month}`),
 
   createTransaction: (data) => request('/transactions', { method: 'POST', body: JSON.stringify(data) }),
-  listTransactions: (userId) => request(`/transactions/${userId}`),
+  listTransactions: (userId, year, month) =>
+    request(`/transactions/${userId}?year=${year}&month=${month}`),
   deleteTransaction: (transactionId) =>
     request(`/transactions/item/${transactionId}`, { method: 'DELETE' }),
 
@@ -31,7 +32,23 @@ export const api = {
 
   getCoachAdvice: (userId, year, month) =>
     request(`/coach/${userId}${year && month ? `?year=${year}&month=${month}` : ''}`),
+  getCoachHistory: (userId) => request(`/coach/history/${userId}`),
+  clearCoachHistory: (userId) => request(`/coach/history/${userId}`, { method: 'DELETE' }),
+  coachChat: (userId, message, year, month) =>
+    request(`/coach/chat/${userId}${year && month ? `?year=${year}&month=${month}` : ''}`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
   getAnomalies: (userId, year, month) => request(`/anomalies/${userId}?year=${year}&month=${month}`),
+  getSubscriptions: (userId) => request(`/subscriptions/${userId}`),
+
+  getSavingsGoalPlan: (userId, targetAmount, months) =>
+    request(`/savings-goal/${userId}`, {
+      method: 'POST',
+      body: JSON.stringify({ target_amount: targetAmount, months }),
+    }),
+
+  getWeeklyDigest: (userId) => request(`/coach/digest/${userId}`),
 
   ingestSms: (userId, rawText) =>
     request('/ingest/sms', { method: 'POST', body: JSON.stringify({ user_id: userId, raw_text: rawText }) }),

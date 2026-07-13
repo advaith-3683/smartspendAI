@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,8 @@ import llm_coach
 import ingestion
 from database import engine, get_db, Base
 from utils import normalize_category
+
+ADMIN_RESET_KEY = os.getenv("ADMIN_RESET_KEY")
 
 Base.metadata.create_all(bind=engine)
 
@@ -103,13 +106,13 @@ def create_transaction(txn: schemas.TransactionCreate, db: Session = Depends(get
 
 
 @app.get("/transactions/{user_id}", response_model=list[schemas.TransactionOut])
-def list_transactions(user_id: int, db: Session = Depends(get_db)):
-    return (
-        db.query(models.Transaction)
-        .filter(models.Transaction.user_id == user_id)
-        .order_by(models.Transaction.date.desc())
-        .all()
-    )
+def list_transactions(user_id: int, year: int | None = None, month: int | None = None, db: Session = Depends(get_db)):
+    query = db.query(models.Transaction).filter(models.Transaction.user_id == user_id)
+    if year is not None and month is not None:
+        start = date(year, month, 1)
+        end = date(year, month, services.get_days_in_month(year, month))
+        query = query.filter(models.Transaction.date >= start, models.Transaction.date <= end)
+    return query.order_by(models.Transaction.date.desc()).all()
 
 
 @app.delete("/transactions/item/{transaction_id}")
@@ -157,6 +160,54 @@ def buy_decision(req: schemas.BuyDecisionRequest, db: Session = Depends(get_db))
 
 # ---------- AI Financial Coach ----------
 
+def _get_pace_data(db: Session, user_id: int, year: int, month: int) -> list[dict]:
+    budgets = (
+        db.query(models.Budget)
+        .filter(
+            models.Budget.user_id == user_id,
+            models.Budget.year == year,
+            models.Budget.month == month,
+        )
+        .all()
+    )
+    pace_data = []
+    for b in budgets:
+        r = services.calculate_pace(db, user_id, b.category, year, month)
+        if r:
+            pace_data.append(r)
+    return pace_data
+
+
+def _get_month_transactions(db: Session, user_id: int, year: int, month: int):
+    from sqlalchemy import func as sa_func
+
+    return (
+        db.query(models.Transaction)
+        .filter(
+            models.Transaction.user_id == user_id,
+            sa_func.strftime("%Y", models.Transaction.date) == str(year),
+            sa_func.strftime("%m", models.Transaction.date) == f"{month:02d}",
+        )
+        .order_by(models.Transaction.date.desc())
+        .all()
+    )
+
+
+def _raise_for_llm_error(e: Exception):
+    if isinstance(e, RuntimeError):
+        raise HTTPException(status_code=503, detail=str(e))
+    error_text = str(e)
+    if "429" in error_text or "quota" in error_text.lower() or "rate limit" in error_text.lower():
+        raise HTTPException(
+            status_code=429,
+            detail="The AI coach has hit its usage limit for now. Please try again in a minute.",
+        )
+    raise HTTPException(
+        status_code=502,
+        detail="The AI coach couldn't respond right now. Please try again shortly.",
+    )
+
+
 @app.get("/coach/{user_id}", response_model=schemas.CoachResponse)
 def get_coaching(user_id: int, year: int = None, month: int = None, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -166,30 +217,95 @@ def get_coaching(user_id: int, year: int = None, month: int = None, db: Session 
     today = date.today()
     target_year = year or today.year
     target_month = month or today.month
-
-    budgets = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.year == target_year,
-            models.Budget.month == target_month,
-        )
-        .all()
-    )
-    pace_data = []
-    for b in budgets:
-        r = services.calculate_pace(db, user_id, b.category, target_year, target_month)
-        if r:
-            pace_data.append(r)
+    pace_data = _get_pace_data(db, user_id, target_year, target_month)
 
     try:
         advice = llm_coach.get_coaching_advice(user.name, user.monthly_income, pace_data)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
+        _raise_for_llm_error(e)
 
     return {"advice": advice}
+
+
+@app.get("/coach/history/{user_id}", response_model=list[schemas.ChatMessageOut])
+def get_coach_history(user_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(models.ChatMessage)
+        .filter(models.ChatMessage.user_id == user_id)
+        .order_by(models.ChatMessage.created_at.asc())
+        .all()
+    )
+
+
+@app.delete("/coach/history/{user_id}")
+def clear_coach_history(user_id: int, db: Session = Depends(get_db)):
+    deleted = db.query(models.ChatMessage).filter(models.ChatMessage.user_id == user_id).delete()
+    db.commit()
+    return {"deleted": deleted}
+
+
+@app.post("/coach/chat/{user_id}", response_model=schemas.CoachChatResponse)
+def coach_chat(
+    user_id: int,
+    req: schemas.CoachChatRequest,
+    year: int = None,
+    month: int = None,
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    today = date.today()
+    target_year = year or today.year
+    target_month = month or today.month
+
+    pace_data = _get_pace_data(db, user_id, target_year, target_month)
+    month_txns = _get_month_transactions(db, user_id, target_year, target_month)
+    total_spent = sum(t.amount for t in month_txns)
+    remaining = user.monthly_income - total_spent
+    recent_transactions = [
+        {
+            "date": t.date.isoformat(),
+            "amount": t.amount,
+            "category": t.category,
+            "merchant": t.merchant,
+        }
+        for t in month_txns[:15]
+    ]
+
+    db_history = (
+        db.query(models.ChatMessage)
+        .filter(models.ChatMessage.user_id == user_id)
+        .order_by(models.ChatMessage.created_at.asc())
+        .all()
+    )
+    history = [{"role": m.role, "content": m.content} for m in db_history]
+
+    anomalies = services.get_anomalies(db, user_id, target_year, target_month)
+    subscriptions = services.detect_recurring_subscriptions(db, user_id)
+
+    try:
+        reply = llm_coach.chat_reply(
+            user.name,
+            user.monthly_income,
+            pace_data,
+            total_spent,
+            remaining,
+            recent_transactions,
+            history,
+            req.message,
+            anomalies,
+            subscriptions,
+        )
+    except Exception as e:
+        _raise_for_llm_error(e)
+
+    db.add(models.ChatMessage(user_id=user_id, role="user", content=req.message))
+    db.add(models.ChatMessage(user_id=user_id, role="model", content=reply))
+    db.commit()
+
+    return {"reply": reply}
 
 
 # ---------- Smart Anomaly Detection ----------
@@ -197,6 +313,53 @@ def get_coaching(user_id: int, year: int = None, month: int = None, db: Session 
 @app.get("/anomalies/{user_id}", response_model=list[schemas.AnomalyItem])
 def get_anomalies(user_id: int, year: int, month: int, db: Session = Depends(get_db)):
     return services.get_anomalies(db, user_id, year, month)
+
+
+# ---------- Weekly Digest ----------
+
+@app.get("/coach/digest/{user_id}", response_model=schemas.WeeklyDigestResponse)
+def get_weekly_digest(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    digest = services.get_weekly_digest_data(db, user_id)
+
+    try:
+        digest_text = llm_coach.get_weekly_digest(user.name, digest)
+    except Exception as e:
+        _raise_for_llm_error(e)
+
+    return {**digest, "digest_text": digest_text}
+
+
+# ---------- Recurring Subscription Detection ----------
+
+@app.get("/subscriptions/{user_id}", response_model=list[schemas.SubscriptionItem])
+def get_subscriptions(user_id: int, db: Session = Depends(get_db)):
+    return services.detect_recurring_subscriptions(db, user_id)
+
+
+# ---------- Goal-Based Savings Simulator ----------
+
+@app.post("/savings-goal/{user_id}", response_model=schemas.SavingsGoalResponse)
+def savings_goal(user_id: int, req: schemas.SavingsGoalRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if req.target_amount <= 0 or req.months <= 0:
+        raise HTTPException(status_code=422, detail="target_amount and months must be positive.")
+
+    plan = services.compute_savings_plan(db, user_id, req.target_amount, req.months)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        advice = llm_coach.get_goal_advice(user.name, plan)
+    except Exception as e:
+        _raise_for_llm_error(e)
+
+    return {**plan, "advice": advice}
 
 
 # ---------- Automated Ingestion ----------
@@ -335,6 +498,23 @@ def delete_bill(bill_id: int, db: Session = Depends(get_db)):
     db.delete(bill)
     db.commit()
     return {"deleted": True, "id": bill_id}
+
+
+# ---------- Admin ----------
+
+@app.post("/admin/reset-database")
+def reset_database(key: str):
+    """Wipes and recreates all tables. Requires ADMIN_RESET_KEY to be set as an
+    environment variable and passed as a query param. Useful for deployed
+    environments where you can't just delete the .db file directly."""
+    if not ADMIN_RESET_KEY:
+        raise HTTPException(status_code=503, detail="ADMIN_RESET_KEY is not configured on this server.")
+    if key != ADMIN_RESET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid reset key.")
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    return {"status": "Database reset successfully."}
 
 
 @app.get("/")

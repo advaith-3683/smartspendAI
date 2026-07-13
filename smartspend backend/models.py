@@ -83,3 +83,15 @@ class BillPayment(Base):
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
 
     bill = relationship("Bill", back_populates="payments")
+
+
+class ChatMessage(Base):
+    """A single turn in a user's conversation with Coco AI, kept so the chat
+    survives page refreshes and Coco can recall earlier turns in the thread."""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # "user" | "model"
+    content = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
