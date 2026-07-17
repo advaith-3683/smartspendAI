@@ -747,3 +747,176 @@ form.inline-form {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.75; transform: scale(1.05); }
 }
+
+/* ---------- Floating Coco mic button (mobile) ---------- */
+
+.coco-fab {
+  display: none;
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 60;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #14101C;
+  background: linear-gradient(145deg, var(--accent-purple), var(--accent-pink) 55%, var(--gold));
+  box-shadow:
+    0 10px 28px -6px rgba(177, 138, 255, 0.55),
+    0 4px 14px rgba(0, 0, 0, 0.45),
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.coco-fab-ring {
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--accent-purple), var(--accent-pink), var(--gold));
+  opacity: 0.3;
+  z-index: -1;
+  animation: coco-breathe 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.coco-fab-icon {
+  color: #14101C;
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.25));
+}
+
+.coco-fab-label {
+  line-height: 1;
+}
+
+@keyframes coco-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.32; }
+  50% { transform: scale(1.16); opacity: 0.1; }
+}
+
+.coco-fab:hover {
+  transform: translateY(-2px) scale(1.03);
+}
+
+.coco-fab:active {
+  transform: scale(0.95);
+}
+
+.coco-fab:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.coco-fab.listening {
+  background: linear-gradient(145deg, var(--gold, #d4af37), var(--accent-pink) 80%);
+  color: #14101C;
+  animation: mic-pulse 1.1s ease-in-out infinite;
+  box-shadow:
+    0 0 0 8px rgba(232, 184, 75, 0.15),
+    0 10px 28px -6px rgba(232, 184, 75, 0.6),
+    inset 0 1px 1px rgba(255, 255, 255, 0.4);
+}
+
+.coco-fab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b8202f;
+  box-shadow: 0 0 0 3px rgba(184, 32, 47, 0.25);
+  animation: typing-bounce 1s infinite ease-in-out;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 24px 16px 72px;
+  }
+
+  .ledger-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+    padding-bottom: 16px;
+  }
+
+  .ledger-header .brand {
+    font-size: 28px;
+  }
+
+  .ledger-header > div:last-child {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .income-strip {
+    flex-wrap: wrap;
+    row-gap: 10px;
+    column-gap: 20px;
+    padding: 12px 0 20px;
+  }
+
+  .section-title {
+    font-size: 20px;
+  }
+
+  .budget-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    border-radius: 16px;
+  }
+
+  .chat-card {
+    padding: 14px;
+  }
+
+  .chat-window {
+    max-height: 320px;
+  }
+
+  .chat-bubble {
+    max-width: 92%;
+    font-size: 13.5px;
+    padding: 10px 14px;
+  }
+
+  .chat-input-row {
+    flex-wrap: wrap;
+  }
+
+  .chat-input-row input {
+    flex-basis: 100%;
+  }
+
+  .chat-input-row .chat-send {
+    flex: 1;
+  }
+
+  .field {
+    flex: 1 1 100%;
+  }
+
+  .field input, .field select, textarea {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .coco-fab {
+    display: flex;
+  }
+}
+

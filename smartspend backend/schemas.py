@@ -112,8 +112,18 @@ class CoachChatRequest(BaseModel):
     message: str
 
 
+class LoggedExpense(BaseModel):
+    id: int
+    amount: float
+    category: str
+    date: date
+    merchant: Optional[str] = None
+    note: Optional[str] = None
+
+
 class CoachChatResponse(BaseModel):
     reply: str
+    logged_expenses: list[LoggedExpense] = []
 
 
 class AnomalyItem(BaseModel):

@@ -30,7 +30,7 @@ const SpeechRecognitionAPI =
 const SPEECH_SUPPORTED = !!SpeechRecognitionAPI
 const VOICE_OUTPUT_SUPPORTED = typeof window !== 'undefined' && !!window.speechSynthesis
 
-export default function CoachPanel({ userId, year, month }) {
+export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
   const [messages, setMessages] = useState([GREETING])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -42,6 +42,7 @@ export default function CoachPanel({ userId, year, month }) {
   const recognitionRef = useRef(null)
   const sendRef = useRef(() => {})
   const voiceOutputRef = useRef(false)
+  const transcriptRef = useRef('')
 
   useEffect(() => {
     voiceOutputRef.current = voiceOutput
@@ -60,16 +61,28 @@ export default function CoachPanel({ userId, year, month }) {
   useEffect(() => {
     if (!SPEECH_SUPPORTED) return
     const recognition = new SpeechRecognitionAPI()
-    recognition.continuous = false
-    recognition.interimResults = false
+    recognition.continuous = true
+    recognition.interimResults = true
     recognition.lang = 'en-IN'
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript
-      sendRef.current(transcript)
+      let finalChunk = ''
+      let interimChunk = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const chunk = event.results[i][0].transcript
+        if (event.results[i].isFinal) finalChunk += chunk + ' '
+        else interimChunk += chunk
+      }
+      if (finalChunk) transcriptRef.current = (transcriptRef.current + ' ' + finalChunk).trim()
+      setInput((transcriptRef.current + ' ' + interimChunk).trim())
     }
     recognition.onerror = () => setListening(false)
-    recognition.onend = () => setListening(false)
+    recognition.onend = () => {
+      setListening(false)
+      const finalText = transcriptRef.current.trim()
+      transcriptRef.current = ''
+      if (finalText) sendRef.current(finalText)
+    }
 
     recognitionRef.current = recognition
     return () => recognition.stop()
@@ -110,8 +123,10 @@ export default function CoachPanel({ userId, year, month }) {
 
     try {
       const res = await api.coachChat(userId, trimmed, year, month)
-      setMessages((prev) => [...prev, { role: 'model', content: res.reply }])
+      const logged = res.logged_expenses || []
+      setMessages((prev) => [...prev, { role: 'model', content: res.reply, loggedExpenses: logged }])
       speak(res.reply)
+      if (logged.length > 0 && onExpenseLogged) onExpenseLogged()
     } catch (err) {
       const message = err.message || 'Something went wrong. Please try again.'
       setError(message.length > MAX_ERROR_LENGTH ? message.slice(0, MAX_ERROR_LENGTH) + '…' : message)
@@ -145,12 +160,18 @@ export default function CoachPanel({ userId, year, month }) {
     if (!SPEECH_SUPPORTED || !recognitionRef.current || loading) return
     if (listening) {
       recognitionRef.current.stop()
-      setListening(false)
     } else {
       if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
+      transcriptRef.current = ''
+      setInput('')
       setListening(true)
       recognitionRef.current.start()
     }
+  }
+
+  const handleCocoFabTap = () => {
+    if (VOICE_OUTPUT_SUPPORTED) setVoiceOutput(true)
+    toggleListening()
   }
 
   const hasChatted = messages.some((m) => m.role === 'user')
@@ -162,6 +183,21 @@ export default function CoachPanel({ userId, year, month }) {
           messages.map((m, i) => (
             <div key={i} className={`chat-bubble ${m.role}`}>
               {m.content}
+              {m.loggedExpenses && m.loggedExpenses.length > 0 && (
+                <div className="chat-logged-chips" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {m.loggedExpenses.map((le, j) => (
+                    <span
+                      key={j}
+                      className="chip"
+                      style={{ fontSize: 11, padding: '2px 8px', opacity: 0.85 }}
+                      title={le.note || ''}
+                    >
+                      ✓ Logged ₹{le.amount.toLocaleString('en-IN')} · {le.category}
+                      {le.merchant ? ` · ${le.merchant}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         {loading && <TypingDots />}
@@ -234,6 +270,47 @@ export default function CoachPanel({ userId, year, month }) {
           </button>
         )}
       </form>
+
+      {SPEECH_SUPPORTED && (
+        <button
+          type="button"
+          className={`coco-fab${listening ? ' listening' : ''}`}
+          onClick={handleCocoFabTap}
+          disabled={loading}
+          aria-label={listening ? 'Stop talking to Coco and send' : 'Talk to Coco'}
+          title={listening ? 'Tap to stop and send' : 'Tap to talk to Coco'}
+        >
+          <span className="coco-fab-ring" aria-hidden="true" />
+          {listening ? (
+            <span className="coco-fab-dot" aria-hidden="true" />
+          ) : (
+            <svg
+              className="coco-fab-icon"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M19 11a7 7 0 0 1-14 0M12 18v3"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+          <span className="coco-fab-label">{listening ? 'STOP' : 'COCO'}</span>
+        </button>
+      )}
     </div>
   )
 }

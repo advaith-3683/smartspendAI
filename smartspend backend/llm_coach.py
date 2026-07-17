@@ -244,6 +244,14 @@ def build_system_context(
         "If there are detected anomalies or subscriptions above and the user hasn't already been "
         "told about them in this conversation, proactively bring up the single most important one "
         "early in your reply — don't wait to be asked. Otherwise weave them in only when relevant.",
+        "",
+        "You have a log_expense tool. Whenever the user tells you about something they spent "
+        "money on (e.g. 'I had breakfast today, it cost 200 rupees'), call log_expense to save "
+        "it as a transaction — don't just acknowledge it in words without calling the tool. Pick "
+        "the best-fit category yourself from what's already budgeted above (or Miscellaneous if "
+        "nothing fits), infer the merchant/note from context, and default the date to today if "
+        "the user doesn't give one. After the tool runs, confirm what you logged in one short, "
+        "natural sentence — don't recite the tool's raw output.",
     ]
     return "\n".join(lines)
 
@@ -259,17 +267,24 @@ def chat_reply(
     message: str,
     anomalies: list[dict] | None = None,
     subscriptions: list[dict] | None = None,
+    log_expense_fn=None,
 ) -> str:
     """Continue a multi-turn conversation with Coco, grounded in live budget data.
 
     history: list of {"role": "user"|"model", "content": str}, oldest first.
+    log_expense_fn: optional callable Coco can invoke as a tool to save a new
+    expense it hears about mid-conversation (see main.py for the closure that
+    actually writes to the database). When provided, the SDK's automatic
+    function calling handles invoking it and feeding the result back to the
+    model before the final reply is produced.
     """
     _ensure_configured()
     system_context = build_system_context(
         user_name, monthly_income, pace_data, total_spent, remaining, recent_transactions,
         anomalies, subscriptions,
     )
-    model = genai.GenerativeModel(MODEL_NAME, system_instruction=system_context)
+    tools = [log_expense_fn] if log_expense_fn else None
+    model = genai.GenerativeModel(MODEL_NAME, system_instruction=system_context, tools=tools)
 
     chat_history = [
         {"role": turn["role"], "parts": [turn["content"]]}
@@ -277,6 +292,9 @@ def chat_reply(
         if turn.get("content")
     ]
 
-    chat = model.start_chat(history=chat_history)
+    chat = model.start_chat(
+        history=chat_history,
+        enable_automatic_function_calling=bool(log_expense_fn),
+    )
     response = chat.send_message(message)
     return response.text.strip()

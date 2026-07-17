@@ -214,7 +214,7 @@ export default function App() {
       <section className="block">
         <div className="section-eyebrow">COCO AI</div>
         <div className="section-title">Chat live with your money coach</div>
-        <CoachPanel userId={user.id} year={selectedYear} month={selectedMonth} />
+        <CoachPanel userId={user.id} year={selectedYear} month={selectedMonth} onExpenseLogged={refreshData} />
       </section>
 
       <section className="block">

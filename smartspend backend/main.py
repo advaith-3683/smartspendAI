@@ -285,6 +285,50 @@ def coach_chat(
     anomalies = services.get_anomalies(db, user_id, target_year, target_month)
     subscriptions = services.detect_recurring_subscriptions(db, user_id)
 
+    logged_expenses: list[models.Transaction] = []
+
+    def log_expense(amount: float, category: str, merchant: str = None, note: str = None, txn_date: str = None) -> dict:
+        """Save a new expense the user just mentioned as a real transaction, so it counts toward their budget and burn rate.
+
+        Args:
+            amount: The amount spent, in INR.
+            category: Best-fit spending category (e.g. Food, Groceries, Transport, Shopping, Entertainment, Bills, Health, Miscellaneous).
+            merchant: Merchant or place name, if the user mentioned one.
+            note: A short description of what the expense was for (e.g. "breakfast").
+            txn_date: Date of the expense as YYYY-MM-DD. Defaults to today if not given.
+        """
+        parsed_date = date.today()
+        if txn_date:
+            try:
+                parsed_date = date.fromisoformat(txn_date)
+            except ValueError:
+                pass
+
+        resolved_category = services.resolve_transaction_category(
+            db, user_id, category, parsed_date.year, parsed_date.month
+        )
+        db_txn = models.Transaction(
+            user_id=user_id,
+            amount=amount,
+            category=resolved_category,
+            date=parsed_date,
+            note=note,
+            merchant=merchant,
+            source="chat",
+            frequency="daily",
+        )
+        db.add(db_txn)
+        db.commit()
+        db.refresh(db_txn)
+        logged_expenses.append(db_txn)
+
+        return {
+            "status": "logged",
+            "amount": amount,
+            "category": resolved_category,
+            "date": parsed_date.isoformat(),
+        }
+
     try:
         reply = llm_coach.chat_reply(
             user.name,
@@ -297,6 +341,7 @@ def coach_chat(
             req.message,
             anomalies,
             subscriptions,
+            log_expense_fn=log_expense,
         )
     except Exception as e:
         _raise_for_llm_error(e)
@@ -305,7 +350,20 @@ def coach_chat(
     db.add(models.ChatMessage(user_id=user_id, role="model", content=reply))
     db.commit()
 
-    return {"reply": reply}
+    return {
+        "reply": reply,
+        "logged_expenses": [
+            {
+                "id": t.id,
+                "amount": t.amount,
+                "category": t.category,
+                "date": t.date,
+                "merchant": t.merchant,
+                "note": t.note,
+            }
+            for t in logged_expenses
+        ],
+    }
 
 
 # ---------- Smart Anomaly Detection ----------
