@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = "gemini-flash-latest"
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GENERATION_CONFIG = {"max_output_tokens": 1200}
+REQUEST_OPTIONS = {"timeout": 30, "retry": None}
 
 _configured = False
 
@@ -62,8 +64,8 @@ def get_coaching_advice(user_name: str, monthly_income: float, pace_data: list[d
     _ensure_configured()
     prompt = build_prompt(user_name, monthly_income, pace_data)
     model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
+    return response.text.strip()[:8000]
 
 
 def build_digest_prompt(user_name: str, digest: dict) -> str:
@@ -73,7 +75,7 @@ def build_digest_prompt(user_name: str, digest: dict) -> str:
     if digest["total_last_week"] > 0:
         change_pct = (change / digest["total_last_week"]) * 100
     else:
-        change_pct = 0.0
+        change_pct = None
 
     lines = [
         f"You are Coco, {user_name}'s financial coach, writing a short weekly check-in message "
@@ -81,7 +83,8 @@ def build_digest_prompt(user_name: str, digest: dict) -> str:
         "",
         f"Total spent this week: INR {digest['total_this_week']:,.0f}",
         f"Total spent last week: INR {digest['total_last_week']:,.0f}",
-        f"Change vs last week: {change_pct:+.0f}%",
+        (f"Change vs last week: {change_pct:+.0f}%" if change_pct is not None else "Percentage change unavailable: last week was zero."),
+        "Totals exclude monthly recurring payments; they describe non-monthly spending.",
         "",
         "Top spending categories this week:",
     ]
@@ -123,8 +126,8 @@ def get_weekly_digest(user_name: str, digest: dict) -> str:
     _ensure_configured()
     prompt = build_digest_prompt(user_name, digest)
     model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
+    return response.text.strip()[:8000]
 
 
 def build_goal_prompt(user_name: str, plan: dict) -> str:
@@ -141,6 +144,8 @@ def build_goal_prompt(user_name: str, plan: dict) -> str:
         f"Additional monthly cut needed to hit the goal: INR {plan['additional_cut_needed']:,.0f}",
         f"Goal achievable within reasonable category cuts: {'yes' if plan['achievable'] else 'no — the cuts required exceed what is realistic in a single category'}",
         "",
+        f"History qualification: {plan['baseline_note']}",
+        "Never recommend cuts to rent, EMI, insurance, tuition or other fixed costs. Do not claim sparse history is reliable.",
         "Here is the exact cut plan already calculated per category (do not recalculate or "
         "change these numbers, just explain them):",
     ]
@@ -171,8 +176,8 @@ def get_goal_advice(user_name: str, plan: dict) -> str:
     _ensure_configured()
     prompt = build_goal_prompt(user_name, plan)
     model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
+    return response.text.strip()[:8000]
 
 
 def build_system_context(
@@ -245,12 +250,13 @@ def build_system_context(
         "told about them in this conversation, proactively bring up the single most important one "
         "early in your reply — don't wait to be asked. Otherwise weave them in only when relevant.",
         "",
+        "The log_expense tool only creates a proposal, never spending. Only the user pressing Save records an expense. Never claim a proposal is logged or saved; ask the user to review Save/Cancel controls.",
         "You have a log_expense tool. Whenever the user tells you about something they spent "
-        "money on (e.g. 'I had breakfast today, it cost 200 rupees'), call log_expense to save "
+        "money on (e.g. 'I had breakfast today, it cost 200 rupees'), call log_expense to propose "
         "it as a transaction — don't just acknowledge it in words without calling the tool. Pick "
-        "the best-fit category yourself from what's already budgeted above (or Miscellaneous if "
+        "the meaningful category of the expense, even if it has no budget (or Uncategorized if "
         "nothing fits), infer the merchant/note from context, and default the date to today if "
-        "the user doesn't give one. After the tool runs, confirm what you logged in one short, "
+        "the user doesn't give one. After the tool runs, say the expense is ready for review in one short, "
         "natural sentence — don't recite the tool's raw output.",
     ]
     return "\n".join(lines)
@@ -296,5 +302,5 @@ def chat_reply(
         history=chat_history,
         enable_automatic_function_calling=bool(log_expense_fn),
     )
-    response = chat.send_message(message)
-    return response.text.strip()
+    response = chat.send_message(message, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
+    return response.text.strip()[:8000]

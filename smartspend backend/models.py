@@ -1,3 +1,4 @@
+from money import Money
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -10,7 +11,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    monthly_income = Column(Float, nullable=False, default=0.0)
+    monthly_income = Column(Money, nullable=False, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     budgets = relationship("Budget", back_populates="user", cascade="all, delete-orphan")
@@ -27,7 +28,7 @@ class Budget(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     category = Column(String, nullable=False, index=True)
-    monthly_limit = Column(Float, nullable=False)
+    monthly_limit = Column(Money, nullable=False)
     month = Column(Integer, nullable=False)  # 1-12
     year = Column(Integer, nullable=False)
 
@@ -39,7 +40,7 @@ class Transaction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    amount = Column(Float, nullable=False)
+    amount = Column(Money, nullable=False)
     category = Column(String, nullable=False, index=True)
     date = Column(Date, nullable=False)
     note = Column(String, nullable=True)
@@ -59,7 +60,7 @@ class Bill(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String, nullable=False)
     category = Column(String, nullable=False, index=True)
-    amount = Column(Float, nullable=False)
+    amount = Column(Money, nullable=False)
     due_day = Column(Integer, nullable=False)  # day of month, 1-31
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -95,3 +96,21 @@ class ChatMessage(Base):
     role = Column(String, nullable=False)  # "user" | "model"
     content = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExpenseProposal(Base):
+    __tablename__ = "expense_proposals"
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    payload = Column(String, nullable=False)
+    state = Column(String, nullable=False, default="pending")
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
+
+
+class ImportBatch(Base):
+    __tablename__ = "import_batches"
+    __table_args__ = (UniqueConstraint("user_id", "batch_key", name="uq_import_user_key"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    batch_key = Column(String(64), nullable=False)
+    inserted = Column(Integer, nullable=False)

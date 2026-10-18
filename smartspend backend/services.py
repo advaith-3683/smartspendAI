@@ -1,3 +1,5 @@
+from decimal import Decimal, ROUND_HALF_UP, getcontext
+getcontext().rounding = ROUND_HALF_UP
 import calendar
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
@@ -7,73 +9,12 @@ import models
 from utils import normalize_category
 
 MISCELLANEOUS = "Miscellaneous"
-DEFAULT_MISC_LIMIT = 2000.0
-
-
-def ensure_category_budget(db: Session, user_id: int, raw_category: str, year: int, month: int, default_limit: float) -> str:
-    """Guarantees the given category has its own budget row for this month —
-    creating one with default_limit if missing — rather than falling back to
-    a shared bucket. Used for bills, which should always get their own row."""
-    category = normalize_category(raw_category)
-    existing = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.category == category,
-            models.Budget.year == year,
-            models.Budget.month == month,
-        )
-        .first()
-    )
-    if not existing:
-        db.add(models.Budget(
-            user_id=user_id, category=category, monthly_limit=default_limit, month=month, year=year,
-        ))
-        db.commit()
-    return category
+DEFAULT_MISC_LIMIT = Decimal("2000.0")
 
 
 def resolve_transaction_category(db: Session, user_id: int, raw_category: str, year: int, month: int) -> str:
-    """If the typed category has no budget for that month, fall back to a
-    'Miscellaneous' bucket so the spend is still tracked and visible, instead
-    of silently creating an ungoverned category with no gauge."""
-    category = normalize_category(raw_category)
-
-    existing = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.category == category,
-            models.Budget.year == year,
-            models.Budget.month == month,
-        )
-        .first()
-    )
-    if existing:
-        return category
-
-    misc_budget = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.category == MISCELLANEOUS,
-            models.Budget.year == year,
-            models.Budget.month == month,
-        )
-        .first()
-    )
-    if not misc_budget:
-        misc_budget = models.Budget(
-            user_id=user_id,
-            category=MISCELLANEOUS,
-            monthly_limit=DEFAULT_MISC_LIMIT,
-            month=month,
-            year=year,
-        )
-        db.add(misc_budget)
-        db.commit()
-
-    return MISCELLANEOUS
+    """Preserve the category; budgets are always an explicit user decision."""
+    return normalize_category(raw_category)
 
 
 def get_days_in_month(year: int, month: int) -> int:
@@ -89,6 +30,7 @@ def calculate_pace(db: Session, user_id: int, category: str, year: int, month: i
     if today is None:
         today = date.today()
 
+    category = normalize_category(category)
     budget = (
         db.query(models.Budget)
         .filter(
@@ -103,38 +45,41 @@ def calculate_pace(db: Session, user_id: int, category: str, year: int, month: i
         return None
 
     days_in_month = get_days_in_month(year, month)
-    days_elapsed = today.day if (today.year == year and today.month == month) else days_in_month
-    days_elapsed = max(days_elapsed, 1)  # avoid divide-by-zero on day 1
+    days_elapsed = today.day if (today.year == year and today.month == month) else (days_in_month if date(year, month, 1) < today else 0)
+    # Future months have zero elapsed days and no incurred spending.
 
     txns = (
         db.query(models.Transaction.amount, models.Transaction.frequency)
         .filter(
             models.Transaction.user_id == user_id,
             models.Transaction.category == category,
-            func.strftime("%Y", models.Transaction.date) == str(year),
-            func.strftime("%m", models.Transaction.date) == f"{month:02d}",
+            models.Transaction.date <= today,
+            func.extract("year", models.Transaction.date) == year,
+            func.extract("month", models.Transaction.date) == month,
         )
         .all()
     )
-    daily_spent = sum(amount for amount, freq in txns if freq != "monthly")
-    monthly_spent = sum(amount for amount, freq in txns if freq == "monthly")
+    daily_spent = sum((amount for amount, freq in txns if freq == "daily"), Decimal(0))
+    monthly_spent = sum((amount for amount, freq in txns if freq != "daily"), Decimal(0))
     spent_so_far = daily_spent + monthly_spent
 
     # Monthly (recurring/lump-sum) spend already happened in full — it isn't
     # paced across the month, so it's added once rather than projected daily.
-    daily_rate = daily_spent / days_elapsed
+    daily_rate = daily_spent / max(days_elapsed, 1)
     projected_spend = (daily_rate * days_in_month) + monthly_spent
     percent_of_budget_projected = (
         (projected_spend / budget.monthly_limit) * 100 if budget.monthly_limit > 0 else 0
     )
 
-    if daily_spent == 0:
+    if spent_so_far > budget.monthly_limit:
+        status = "over_budget"
+    elif daily_spent == 0:
         # No ongoing daily spend to project — this category is either untouched
         # or fully settled by a one-time/monthly payment. Status should reflect
         # whether that payment fit the budget, not a fabricated future risk.
         status = "over_budget" if spent_so_far > budget.monthly_limit else "on_track"
     elif percent_of_budget_projected > 100:
-        status = "over_budget"
+        status = "at_risk"
     elif percent_of_budget_projected >= 85:
         status = "at_risk"
     else:
@@ -154,6 +99,7 @@ def calculate_pace(db: Session, user_id: int, category: str, year: int, month: i
 
 def evaluate_purchase(db: Session, user_id: int, category: str, item_cost: float, year: int, month: int):
     """'Should I Buy This?' calculator."""
+    category = normalize_category(category)
     budget = (
         db.query(models.Budget)
         .filter(
@@ -164,18 +110,21 @@ def evaluate_purchase(db: Session, user_id: int, category: str, item_cost: float
         )
         .first()
     )
-    spent_so_far = (
-        db.query(func.coalesce(func.sum(models.Transaction.amount), 0.0))
+    spent_so_far = sum((row[0] for row in (
+        db.query(models.Transaction.amount)
         .filter(
             models.Transaction.user_id == user_id,
+            models.Transaction.date <= date.today(),
             models.Transaction.category == category,
-            func.strftime("%Y", models.Transaction.date) == str(year),
-            func.strftime("%m", models.Transaction.date) == f"{month:02d}",
+            func.extract("year", models.Transaction.date) == year,
+            func.extract("month", models.Transaction.date) == month,
         )
-        .scalar()
-    )
+        .all()
+    )), Decimal(0))
 
-    limit = budget.monthly_limit if budget else 0.0
+    if budget is None:
+        return {"category": category, "item_cost": item_cost, "budget_exists": False, "remaining_budget_before": None, "remaining_budget_after": None, "would_exceed_budget": None, "message": "No budget exists for this category and selected month. Set one to assess this purchase."}
+    limit = budget.monthly_limit
     remaining_before = limit - spent_so_far
     remaining_after = remaining_before - item_cost
     would_exceed = remaining_after < 0
@@ -185,7 +134,7 @@ def evaluate_purchase(db: Session, user_id: int, category: str, item_cost: float
             f"This would put you {abs(remaining_after):.2f} over your {category} budget. "
             f"Consider waiting or trimming spend elsewhere this month."
         )
-    elif remaining_after < limit * 0.1:
+    elif remaining_after < limit * Decimal("0.1"):
         message = (
             f"You can afford it, but it uses almost all of your remaining {category} budget "
             f"({remaining_after:.2f} left afterward). Proceed carefully."
@@ -204,8 +153,8 @@ def evaluate_purchase(db: Session, user_id: int, category: str, item_cost: float
 
 
 def _category_sum(db: Session, user_id: int, category: str, start: date, end_inclusive: date) -> float:
-    return (
-        db.query(func.coalesce(func.sum(models.Transaction.amount), 0.0))
+    return sum((row[0] for row in (
+        db.query(models.Transaction.amount)
         .filter(
             models.Transaction.user_id == user_id,
             models.Transaction.category == category,
@@ -213,8 +162,8 @@ def _category_sum(db: Session, user_id: int, category: str, start: date, end_inc
             models.Transaction.date <= end_inclusive,
             models.Transaction.frequency != "monthly",
         )
-        .scalar()
-    )
+        .all()
+    )), Decimal(0))
 
 
 def detect_spending_spikes(db: Session, user_id: int, categories: list[str], today: date = None):
@@ -233,7 +182,7 @@ def detect_spending_spikes(db: Session, user_id: int, categories: list[str], tod
         this_week = _category_sum(db, user_id, category, this_week_start, today)
         prior_week = _category_sum(db, user_id, category, prior_week_start, prior_week_end)
 
-        if prior_week >= 200 and this_week >= prior_week * 1.5:
+        if prior_week >= 200 and this_week >= prior_week * Decimal("1.5"):
             multiplier = this_week / prior_week
             anomalies.append({
                 "category": category,
@@ -259,17 +208,18 @@ def detect_weekend_patterns(db: Session, user_id: int, categories: list[str], ye
             .filter(
                 models.Transaction.user_id == user_id,
                 models.Transaction.category == category,
-                func.strftime("%Y", models.Transaction.date) == str(year),
-                func.strftime("%m", models.Transaction.date) == f"{month:02d}",
+                func.extract("year", models.Transaction.date) == year,
+                func.extract("month", models.Transaction.date) == month,
                 models.Transaction.frequency != "monthly",
+                models.Transaction.date <= date.today(),
             )
             .all()
         )
         if not txns:
             continue
 
-        weekend_total = 0.0
-        weekday_total = 0.0
+        weekend_total = Decimal("0.0")
+        weekday_total = Decimal("0.0")
         weekend_days = 0
         weekday_days = 0
         seen_days = set()
@@ -310,18 +260,16 @@ def detect_weekend_patterns(db: Session, user_id: int, categories: list[str], ye
 
 
 def get_anomalies(db: Session, user_id: int, year: int, month: int):
-    budgets = (
-        db.query(models.Budget)
-        .filter(models.Budget.user_id == user_id, models.Budget.year == year, models.Budget.month == month)
-        .all()
-    )
-    categories = [b.category for b in budgets]
-    if not categories:
-        return []
-
     today = date.today()
-    spikes = detect_spending_spikes(db, user_id, categories, today)
+    categories = [row[0] for row in db.query(models.Transaction.category).filter(
+        models.Transaction.user_id == user_id,
+        models.Transaction.date >= date(year, month, 1),
+        models.Transaction.date <= min(today, date(year, month, get_days_in_month(year, month))),
+    ).distinct().all()]
+    spikes = detect_spending_spikes(db, user_id, categories, today) if (year, month) == (today.year, today.month) else []
     patterns = detect_weekend_patterns(db, user_id, categories, year, month)
+    for pattern in patterns:
+        pattern["message"] = pattern["message"].replace("this month", f"in {year}-{month:02}")
     return spikes + patterns
 
 
@@ -350,20 +298,20 @@ def get_weekly_digest_data(db: Session, user_id: int, today: date = None):
     )
     total_this_week = sum(t.amount for t in this_week_txns)
 
-    total_last_week = (
-        db.query(func.coalesce(func.sum(models.Transaction.amount), 0.0))
+    total_last_week = sum((row[0] for row in (
+        db.query(models.Transaction.amount)
         .filter(
             models.Transaction.user_id == user_id,
             models.Transaction.date >= prior_week_start,
             models.Transaction.date <= prior_week_end,
             models.Transaction.frequency != "monthly",
         )
-        .scalar()
-    )
+        .all()
+    )), Decimal(0))
 
     by_category = {}
     for t in this_week_txns:
-        by_category[t.category] = by_category.get(t.category, 0.0) + t.amount
+        by_category[t.category] = by_category.get(t.category, Decimal("0.0")) + t.amount
     top_categories = [
         {"category": c, "amount": round(a, 2)}
         for c, a in sorted(by_category.items(), key=lambda kv: kv[1], reverse=True)[:3]
@@ -372,11 +320,7 @@ def get_weekly_digest_data(db: Session, user_id: int, today: date = None):
     anomalies = get_anomalies(db, user_id, today.year, today.month)
     subscriptions = detect_recurring_subscriptions(db, user_id)
 
-    bills = get_bills_with_status(db, user_id, today.year, today.month, today)
-    bills_due_soon = [
-        b for b in bills
-        if b["status"] in ("due", "overdue") and 0 <= (b["due_day"] - today.day) <= 7
-    ]
+    bills_due_soon = upcoming_bills(db, user_id, today)
 
     return {
         "period_start": this_week_start,
@@ -390,9 +334,31 @@ def get_weekly_digest_data(db: Session, user_id: int, today: date = None):
     }
 
 
+def upcoming_bills(db: Session, user_id: int, today: date = None):
+    today = today or date.today()
+    bills_due_soon = []
+    templates = db.query(models.Bill).filter_by(user_id=user_id).all()
+    paid = {(p.bill_id, p.year, p.month) for p in db.query(models.BillPayment).join(models.Bill).filter(
+        models.Bill.user_id == user_id, models.BillPayment.paid == True).all()}
+    horizon = today + timedelta(days=7)
+    for bill in templates:
+        created = bill.created_at.date() if bill.created_at else today
+        period = created.replace(day=1)
+        while period <= horizon:
+            due = date(period.year, period.month, min(bill.due_day, get_days_in_month(period.year, period.month)))
+            if due <= horizon and (bill.id, period.year, period.month) not in paid:
+                bills_due_soon.append({"id": bill.id, "name": bill.name, "category": bill.category,
+                    "amount": bill.amount, "due_day": due.day, "due_date": due,
+                    "status": "overdue" if due < today else "due", "paid_date": None})
+            period = (period + timedelta(days=32)).replace(day=1)
+    bills_due_soon.sort(key=lambda b: b["due_date"])
+
+    return bills_due_soon
+
+
 # ---------- Goal-Based Savings Simulator ----------
 
-MAX_CATEGORY_CUT_RATIO = 0.6  # never suggest cutting more than 60% out of one category
+MAX_CATEGORY_CUT_RATIO = Decimal("0.6")  # never suggest cutting more than 60% out of one category
 
 # Categories that are essentially fixed/contractual and unrealistic to "cut" —
 # excluded from the cuttable pool so the plan doesn't suggest slashing rent 60%.
@@ -412,10 +378,12 @@ def compute_savings_plan(db: Session, user_id: int, target_amount: float, months
     if not user:
         return None
 
-    cutoff = date.today() - timedelta(days=30 * lookback_months)
+    end = date.today().replace(day=1)
+    index = end.year * 12 + end.month - 1 - lookback_months
+    cutoff = date(index // 12, index % 12 + 1, 1)
     txns = (
         db.query(models.Transaction)
-        .filter(models.Transaction.user_id == user_id, models.Transaction.date >= cutoff)
+        .filter(models.Transaction.user_id == user_id, models.Transaction.date >= cutoff, models.Transaction.date < end)
         .all()
     )
 
@@ -424,35 +392,38 @@ def compute_savings_plan(db: Session, user_id: int, target_amount: float, months
     for t in txns:
         key = t.category
         month_key = (t.date.year, t.date.month)
-        by_category_month.setdefault(key, {}).setdefault(month_key, 0.0)
+        by_category_month.setdefault(key, {}).setdefault(month_key, Decimal("0.0"))
         by_category_month[key][month_key] += t.amount
 
     baselines = {}
     for category, months_map in by_category_month.items():
-        num_months = max(len(months_map), 1)
+        num_months = lookback_months
         baselines[category] = sum(months_map.values()) / num_months
 
     total_baseline = sum(baselines.values())
-    monthly_savings_needed = target_amount / months if months > 0 else 0.0
+    monthly_savings_needed = target_amount / months if months > 0 else Decimal("0.0")
     current_monthly_savings = user.monthly_income - total_baseline
-    additional_cut_needed = max(monthly_savings_needed - current_monthly_savings, 0.0)
+    additional_cut_needed = max(monthly_savings_needed - current_monthly_savings, Decimal("0.0"))
 
     # Only discretionary (non-fixed-cost) categories are eligible for cuts.
-    discretionary_total = sum(v for k, v in baselines.items() if not _is_fixed_cost(k))
-    pool_total = discretionary_total if discretionary_total > 0 else total_baseline
+    fixed_categories = {b.category for b in db.query(models.Bill).filter_by(user_id=user_id).all()}
+    discretionary_total = sum(v for k, v in baselines.items() if not _is_fixed_cost(k) and k not in fixed_categories)
+    pool_total = discretionary_total
 
     if pool_total <= 0 or additional_cut_needed <= 0:
-        cut_ratio = 0.0
+        cut_ratio = Decimal("0.0")
     else:
         cut_ratio = min(additional_cut_needed / pool_total, MAX_CATEGORY_CUT_RATIO)
 
     achieved_cut = pool_total * cut_ratio
-    achievable = achieved_cut >= additional_cut_needed - 0.01
+    observed_months = len({(t.date.year, t.date.month) for t in txns})
+    reliable = observed_months == lookback_months and user.created_at is not None and user.created_at.date() <= cutoff
+    achievable = reliable and achieved_cut >= additional_cut_needed - Decimal("0.01")
 
     categories = []
     for category, avg in sorted(baselines.items(), key=lambda kv: kv[1], reverse=True):
-        applies = discretionary_total <= 0 or not _is_fixed_cost(category)
-        effective_ratio = cut_ratio if applies else 0.0
+        applies = not _is_fixed_cost(category) and category not in fixed_categories
+        effective_ratio = cut_ratio if applies else Decimal("0.0")
         cut_amount = avg * effective_ratio
         categories.append({
             "category": category,
@@ -463,6 +434,9 @@ def compute_savings_plan(db: Session, user_id: int, target_amount: float, months
         })
 
     return {
+        "history_months": observed_months,
+        "history_reliable": reliable,
+        "baseline_note": f"Baseline uses {cutoff} through {end - timedelta(days=1)} across {lookback_months} full calendar months, including zero-spend months. Current-month and future entries excluded. " + ("History covers this window; unrecorded expenses can still affect the estimate." if reliable else "Insufficient history: this is a provisional estimate, not a reliable monthly baseline."),
         "target_amount": target_amount,
         "months": months,
         "monthly_savings_needed": round(monthly_savings_needed, 2),
@@ -495,6 +469,7 @@ def detect_recurring_subscriptions(db: Session, user_id: int, lookback_months: i
             models.Transaction.merchant.isnot(None),
             models.Transaction.merchant != "",
             models.Transaction.date >= cutoff,
+            models.Transaction.date <= date.today(),
         )
         .order_by(models.Transaction.date.asc())
         .all()
@@ -516,7 +491,7 @@ def detect_recurring_subscriptions(db: Session, user_id: int, lookback_months: i
         if avg_amount <= 0:
             continue
 
-        within_tolerance = all(abs(a - avg_amount) / avg_amount <= 0.15 for a in amounts)
+        within_tolerance = all(abs(a - avg_amount) / avg_amount <= Decimal("0.15") for a in amounts)
         if not within_tolerance:
             continue
 
@@ -549,13 +524,6 @@ def get_bills_with_status(db: Session, user_id: int, year: int, month: int, toda
     bills = db.query(models.Bill).filter(models.Bill.user_id == user_id).all()
     results = []
     for bill in bills:
-        # Bills recur every month, so make sure whichever month is being
-        # viewed has a budget/pace card for this bill's category too —
-        # not just the month the bill happened to be created in. Without
-        # this, the Entertainment pace card would only ever show up for
-        # July if the bill was originally added in July.
-        ensure_category_budget(db, user_id, bill.category, year, month, default_limit=bill.amount)
-
         payment = (
             db.query(models.BillPayment)
             .filter(
@@ -565,10 +533,10 @@ def get_bills_with_status(db: Session, user_id: int, year: int, month: int, toda
             )
             .first()
         )
-        if payment and payment.paid:
+        if payment and payment.paid and payment.transaction_id and db.get(models.Transaction, payment.transaction_id):
             status = "paid"
             paid_date = payment.paid_date
-        elif today.year == year and today.month == month and today.day > bill.due_day:
+        elif date(year, month, min(bill.due_day, get_days_in_month(year, month))) < today:
             status = "overdue"
             paid_date = None
         else:
@@ -580,7 +548,8 @@ def get_bills_with_status(db: Session, user_id: int, year: int, month: int, toda
             "name": bill.name,
             "category": bill.category,
             "amount": bill.amount,
-            "due_day": bill.due_day,
+            "due_day": min(bill.due_day, get_days_in_month(year, month)),
+            "due_date": date(year, month, min(bill.due_day, get_days_in_month(year, month))),
             "status": status,
             "paid_date": paid_date,
         })
@@ -591,6 +560,12 @@ def mark_bill_paid(db: Session, bill_id: int, year: int, month: int, today: date
     if today is None:
         today = date.today()
 
+    from sqlalchemy import text
+    db.rollback()
+    if db.bind.dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    else:
+        db.query(models.Bill).filter_by(id=bill_id).with_for_update().first()
     bill = db.query(models.Bill).filter(models.Bill.id == bill_id).first()
     if not bill:
         return None
@@ -600,7 +575,7 @@ def mark_bill_paid(db: Session, bill_id: int, year: int, month: int, today: date
         .filter(models.BillPayment.bill_id == bill_id, models.BillPayment.year == year, models.BillPayment.month == month)
         .first()
     )
-    if payment and payment.paid:
+    if payment and payment.paid and payment.transaction_id and db.get(models.Transaction, payment.transaction_id):
         return payment  # already paid, no-op
 
     # The transaction must be dated within the (year, month) being paid for —
@@ -613,7 +588,7 @@ def mark_bill_paid(db: Session, bill_id: int, year: int, month: int, today: date
     # Log the payment as a transaction so it counts toward the budget/pace tracking,
     # tagged 'monthly' so it isn't paced as a recurring daily cost. Bills always get
     # their own dedicated category row — never the generic Miscellaneous fallback.
-    resolved_category = ensure_category_budget(db, bill.user_id, bill.category, year, month, default_limit=bill.amount)
+    resolved_category = normalize_category(bill.category)
     txn = models.Transaction(
         user_id=bill.user_id,
         amount=bill.amount,
@@ -625,8 +600,7 @@ def mark_bill_paid(db: Session, bill_id: int, year: int, month: int, today: date
         frequency="monthly",
     )
     db.add(txn)
-    db.commit()
-    db.refresh(txn)
+    db.flush()
 
     if payment:
         payment.paid = True
@@ -643,6 +617,12 @@ def mark_bill_paid(db: Session, bill_id: int, year: int, month: int, today: date
 
 
 def mark_bill_unpaid(db: Session, bill_id: int, year: int, month: int):
+    from sqlalchemy import text
+    db.rollback()
+    if db.bind.dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    else:
+        db.query(models.Bill).filter_by(id=bill_id).with_for_update().first()
     payment = (
         db.query(models.BillPayment)
         .filter(models.BillPayment.bill_id == bill_id, models.BillPayment.year == year, models.BillPayment.month == month)

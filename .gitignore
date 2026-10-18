@@ -14,3 +14,21 @@
 # OS / editor
 .DS_Store
 .vscode/
+
+# Migration backups contain private financial data
+*.db.backup-*
+*.db-wal
+*.db-shm
+
+# Additional local credentials, databases and environment directories
+**/.env.*
+!**/.env.example
+**/.venv/
+**/env/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.backup*
+*.bak
+*.dump

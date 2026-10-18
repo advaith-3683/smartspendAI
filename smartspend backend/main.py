@@ -1,6 +1,14 @@
+import json
+import uuid
 import os
 from datetime import date
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request, Response
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+from threading import Lock
+import time
+import auth
+from migrations import migrate
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -12,32 +20,122 @@ import ingestion
 from database import engine, get_db, Base
 from utils import normalize_category
 
-ADMIN_RESET_KEY = os.getenv("ADMIN_RESET_KEY")
+ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
+if "*" in ORIGINS:
+    raise RuntimeError("CORS_ORIGINS must contain exact origins")
 
-Base.metadata.create_all(bind=engine)
+if engine.dialect.name == "postgresql":
+    from postgres_storage import verify_postgres
+    verify_postgres(engine, Base.metadata)
+else:
+    migrate(engine, Base.metadata)
 
 app = FastAPI(title="SmartSpend AI")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # tighten before real deployment
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+
+
+DUMMY_HASH = auth.password_hash("dummy-password-not-used")
+_rate_lock = Lock()
+_rate_buckets = {}
+
+
+@app.middleware("http")
+async def request_limits(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin and origin not in ORIGINS:
+        return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+    # Bound actual streamed bytes as well as the declared Content-Length.
+    size = 0
+    original_receive = request._receive
+    async def bounded_receive():
+        nonlocal size
+        message = await original_receive()
+        size += len(message.get("body", b""))
+        if size > 6 * 1024 * 1024:
+            raise HTTPException(413, "Request exceeds 6 MiB")
+        return message
+    request._receive = bounded_receive
+    path = request.url.path
+    group, limit = ("auth", 10) if path.startswith("/auth/") and path != "/auth/me" else (("expensive", 10) if (any(x in path for x in ("/coach", "/ingest", "/savings-goal")) and not path.startswith("/coach/proposals/")) else ("general", 180))
+    # Token-derived key after authentication is handled by expiry; IP additionally
+    # bounds anonymous work. Do not trust forwarded headers from arbitrary clients.
+    key = (request.client.host if request.client else "unknown", group)
+    now = time.monotonic()
+    with _rate_lock:
+        for stale in [k for k, v in _rate_buckets.items() if now - v[0] >= 60]:
+            del _rate_buckets[stale]
+        start, count = _rate_buckets.get(key, (now, 0))
+        if count >= limit:
+            return JSONResponse({"detail": "Rate limit exceeded; retry in a minute"}, status_code=429, headers={"Retry-After": "60"})
+        _rate_buckets[key] = (start, count + 1)
+    try:
+        return await call_next(request)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
 
 # ---------- Users ----------
 
-@app.post("/users", response_model=schemas.UserOut)
-def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = models.User(name=user.name, monthly_income=user.monthly_income)
-    db.add(db_user)
+class Signup(auth.Login, schemas.UserCreate):
+    model_config = {"str_strip_whitespace": False}
+
+    @schemas.field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+@app.post("/auth/signup", response_model=schemas.UserOut)
+def signup(req: Signup, response: Response, db: Session = Depends(get_db)):
+    user = models.User(name=req.name, monthly_income=req.monthly_income)
+    db.add(user)
+    db.flush()
+    db.add(auth.Credential(user_id=user.id, username=req.username.lower(), password_hash=auth.password_hash(req.password)))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Username unavailable")
+    auth.issue_session(db, response, user.id)
+    return user
+
+
+@app.post("/auth/login", response_model=schemas.UserOut)
+def login(req: auth.Login, response: Response, db: Session = Depends(get_db)):
+    credential = db.query(auth.Credential).filter_by(username=req.username.lower()).first()
+    # Perform the same expensive hash when the username does not exist.
+    stored = credential.password_hash if credential else DUMMY_HASH
+    if not auth.password_matches(req.password, stored) or not credential:
+        raise HTTPException(401, "Invalid username or password")
+    auth.issue_session(db, response, credential.user_id)
+    return db.get(models.User, credential.user_id)
+
+
+@app.get("/auth/me", response_model=schemas.UserOut)
+def me(user=Depends(auth.current_user)):
+    return user
+
+
+@app.patch("/auth/me", response_model=schemas.UserOut)
+def update_profile(req: schemas.UserCreate, user=Depends(auth.current_user), db: Session = Depends(get_db)):
+    user.name = req.name
+    user.monthly_income = req.monthly_income
     db.commit()
-    db.refresh(db_user)
-    return db_user
+    return user
 
 
-@app.get("/users/{user_id}", response_model=schemas.UserOut)
+@app.post("/auth/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get(auth.COOKIE)
+    if token:
+        db.query(auth.AuthSession).filter_by(token_hash=auth.token_hash(token)).delete()
+        db.commit()
+    response.delete_cookie(auth.COOKIE, path="/", secure=auth.SECURE, samesite=auth.SAMESITE)
+    return {"logged_out": True}
+
+
+@app.get("/users/{user_id}", response_model=schemas.UserOut, dependencies=[Depends(auth.authorize)])
 def get_user(user_id: int, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
@@ -47,8 +145,9 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 
 # ---------- Budgets ----------
 
-@app.post("/budgets", response_model=schemas.BudgetOut)
-def create_budget(budget: schemas.BudgetCreate, db: Session = Depends(get_db)):
+@app.post("/budgets", response_model=schemas.BudgetOut, dependencies=[Depends(auth.authorize)])
+def create_budget(budget: schemas.BudgetCreate, db: Session = Depends(get_db), user=Depends(auth.current_user)):
+    budget.user_id = user.id
     category = normalize_category(budget.category)
 
     existing = (
@@ -68,6 +167,8 @@ def create_budget(budget: schemas.BudgetCreate, db: Session = Depends(get_db)):
         db.refresh(existing)
         return existing
 
+    if db.query(models.Budget).filter_by(user_id=budget.user_id, year=budget.year, month=budget.month).count() >= 100:
+        raise HTTPException(422, "At most 100 budget categories per month")
     db_budget = models.Budget(
         user_id=budget.user_id,
         category=category,
@@ -81,7 +182,7 @@ def create_budget(budget: schemas.BudgetCreate, db: Session = Depends(get_db)):
     return db_budget
 
 
-@app.get("/budgets/{user_id}", response_model=list[schemas.BudgetOut])
+@app.get("/budgets/{user_id}", response_model=list[schemas.BudgetOut], dependencies=[Depends(auth.authorize)])
 def list_budgets(user_id: int, year: int, month: int, db: Session = Depends(get_db)):
     return (
         db.query(models.Budget)
@@ -92,8 +193,9 @@ def list_budgets(user_id: int, year: int, month: int, db: Session = Depends(get_
 
 # ---------- Transactions ----------
 
-@app.post("/transactions", response_model=schemas.TransactionOut)
-def create_transaction(txn: schemas.TransactionCreate, db: Session = Depends(get_db)):
+@app.post("/transactions", response_model=schemas.TransactionOut, dependencies=[Depends(auth.authorize)])
+def create_transaction(txn: schemas.TransactionCreate, db: Session = Depends(get_db), user=Depends(auth.current_user)):
+    txn.user_id = user.id
     data = txn.model_dump()
     data["category"] = services.resolve_transaction_category(
         db, txn.user_id, txn.category, txn.date.year, txn.date.month
@@ -105,7 +207,7 @@ def create_transaction(txn: schemas.TransactionCreate, db: Session = Depends(get
     return db_txn
 
 
-@app.get("/transactions/{user_id}", response_model=list[schemas.TransactionOut])
+@app.get("/transactions/{user_id}", response_model=list[schemas.TransactionOut], dependencies=[Depends(auth.authorize)])
 def list_transactions(user_id: int, year: int | None = None, month: int | None = None, db: Session = Depends(get_db)):
     query = db.query(models.Transaction).filter(models.Transaction.user_id == user_id)
     if year is not None and month is not None:
@@ -115,19 +217,33 @@ def list_transactions(user_id: int, year: int | None = None, month: int | None =
     return query.order_by(models.Transaction.date.desc()).all()
 
 
-@app.delete("/transactions/item/{transaction_id}")
+@app.delete("/transactions/item/{transaction_id}", dependencies=[Depends(auth.authorize)])
 def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     db_txn = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
     if not db_txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    db.query(models.BillPayment).filter(models.BillPayment.transaction_id == transaction_id).update({"paid": False, "paid_date": None, "transaction_id": None})
+    db.query(models.ExpenseProposal).filter_by(transaction_id=transaction_id).update({"transaction_id": None})
     db.delete(db_txn)
     db.commit()
     return {"deleted": True, "id": transaction_id}
 
 
+@app.patch("/transactions/item/{transaction_id}", response_model=schemas.TransactionOut, dependencies=[Depends(auth.authorize)])
+def update_transaction(transaction_id: int, txn: schemas.TransactionCreate, user=Depends(auth.current_user), db: Session = Depends(get_db)):
+    item = db.get(models.Transaction, transaction_id)
+    if db.query(models.BillPayment).filter_by(transaction_id=transaction_id, paid=True).first():
+        raise HTTPException(409, "This is a linked bill payment. Mark the bill unpaid to replace its payment.")
+    for key, value in txn.model_dump(exclude={"user_id"}).items():
+        setattr(item, key, normalize_category(value) if key == "category" else value)
+    item.user_id = user.id
+    db.commit()
+    return item
+
+
 # ---------- Pace tracking / burn rate ----------
 
-@app.get("/pace/{user_id}/{category}", response_model=schemas.PaceStatus)
+@app.get("/pace/{user_id}/{category}", response_model=schemas.PaceStatus, dependencies=[Depends(auth.authorize)])
 def get_pace(user_id: int, category: str, year: int, month: int, db: Session = Depends(get_db)):
     result = services.calculate_pace(db, user_id, category, year, month)
     if result is None:
@@ -135,7 +251,7 @@ def get_pace(user_id: int, category: str, year: int, month: int, db: Session = D
     return result
 
 
-@app.get("/pace/{user_id}", response_model=list[schemas.PaceStatus])
+@app.get("/pace/{user_id}", response_model=list[schemas.PaceStatus], dependencies=[Depends(auth.authorize)])
 def get_pace_all_categories(user_id: int, year: int, month: int, db: Session = Depends(get_db)):
     budgets = (
         db.query(models.Budget)
@@ -152,10 +268,10 @@ def get_pace_all_categories(user_id: int, year: int, month: int, db: Session = D
 
 # ---------- "Should I Buy This?" ----------
 
-@app.post("/buy-decision", response_model=schemas.BuyDecisionResponse)
-def buy_decision(req: schemas.BuyDecisionRequest, db: Session = Depends(get_db)):
-    today = date.today()
-    return services.evaluate_purchase(db, req.user_id, req.category, req.item_cost, today.year, today.month)
+@app.post("/buy-decision", response_model=schemas.BuyDecisionResponse, dependencies=[Depends(auth.authorize)])
+def buy_decision(req: schemas.BuyDecisionRequest, db: Session = Depends(get_db), user=Depends(auth.current_user)):
+    req.user_id = user.id
+    return services.evaluate_purchase(db, req.user_id, normalize_category(req.category), req.item_cost, req.year, req.month)
 
 
 # ---------- AI Financial Coach ----------
@@ -185,8 +301,9 @@ def _get_month_transactions(db: Session, user_id: int, year: int, month: int):
         db.query(models.Transaction)
         .filter(
             models.Transaction.user_id == user_id,
-            sa_func.strftime("%Y", models.Transaction.date) == str(year),
-            sa_func.strftime("%m", models.Transaction.date) == f"{month:02d}",
+            models.Transaction.date <= date.today(),
+            sa_func.extract("year", models.Transaction.date) == year,
+            sa_func.extract("month", models.Transaction.date) == month,
         )
         .order_by(models.Transaction.date.desc())
         .all()
@@ -195,7 +312,7 @@ def _get_month_transactions(db: Session, user_id: int, year: int, month: int):
 
 def _raise_for_llm_error(e: Exception):
     if isinstance(e, RuntimeError):
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail="AI service unavailable. Check server configuration or retry shortly.")
     error_text = str(e)
     if "429" in error_text or "quota" in error_text.lower() or "rate limit" in error_text.lower():
         raise HTTPException(
@@ -208,7 +325,7 @@ def _raise_for_llm_error(e: Exception):
     )
 
 
-@app.get("/coach/{user_id}", response_model=schemas.CoachResponse)
+@app.get("/coach/{user_id}", response_model=schemas.CoachResponse, dependencies=[Depends(auth.authorize)])
 def get_coaching(user_id: int, year: int = None, month: int = None, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -227,24 +344,25 @@ def get_coaching(user_id: int, year: int = None, month: int = None, db: Session 
     return {"advice": advice}
 
 
-@app.get("/coach/history/{user_id}", response_model=list[schemas.ChatMessageOut])
+@app.get("/coach/history/{user_id}", response_model=list[schemas.ChatMessageOut], dependencies=[Depends(auth.authorize)])
 def get_coach_history(user_id: int, db: Session = Depends(get_db)):
-    return (
+    return list(reversed(
         db.query(models.ChatMessage)
         .filter(models.ChatMessage.user_id == user_id)
-        .order_by(models.ChatMessage.created_at.asc())
+        .order_by(models.ChatMessage.id.desc())
+        .limit(100)
         .all()
-    )
+    ))
 
 
-@app.delete("/coach/history/{user_id}")
+@app.delete("/coach/history/{user_id}", dependencies=[Depends(auth.authorize)])
 def clear_coach_history(user_id: int, db: Session = Depends(get_db)):
     deleted = db.query(models.ChatMessage).filter(models.ChatMessage.user_id == user_id).delete()
     db.commit()
     return {"deleted": deleted}
 
 
-@app.post("/coach/chat/{user_id}", response_model=schemas.CoachChatResponse)
+@app.post("/coach/chat/{user_id}", response_model=schemas.CoachChatResponse, dependencies=[Depends(auth.authorize)])
 def coach_chat(
     user_id: int,
     req: schemas.CoachChatRequest,
@@ -277,18 +395,27 @@ def coach_chat(
     db_history = (
         db.query(models.ChatMessage)
         .filter(models.ChatMessage.user_id == user_id)
-        .order_by(models.ChatMessage.created_at.asc())
+        .order_by(models.ChatMessage.id.desc())
+        .limit(100)
         .all()
     )
-    history = [{"role": m.role, "content": m.content} for m in db_history]
+    history = []
+    context_size = 0
+    for message in db_history[:20]:
+        if context_size + len(message.content) > 20000:
+            break
+        context_size += len(message.content)
+        history.insert(0, {"role": message.role, "content": message.content})
 
     anomalies = services.get_anomalies(db, user_id, target_year, target_month)
     subscriptions = services.detect_recurring_subscriptions(db, user_id)
 
-    logged_expenses: list[models.Transaction] = []
+    if db.query(models.ExpenseProposal).filter_by(user_id=user_id, state="pending").count() >= 90:
+        raise HTTPException(409, "Review your pending expense proposals before continuing")
+    proposed_expenses = []
 
     def log_expense(amount: float, category: str, merchant: str = None, note: str = None, txn_date: str = None) -> dict:
-        """Save a new expense the user just mentioned as a real transaction, so it counts toward their budget and burn rate.
+        """Propose an expense for explicit user review. This does not record spending until the user presses Save.
 
         Args:
             amount: The amount spent, in INR.
@@ -302,32 +429,20 @@ def coach_chat(
             try:
                 parsed_date = date.fromisoformat(txn_date)
             except ValueError:
-                pass
+                raise ValueError("Invalid expense date")
 
         resolved_category = services.resolve_transaction_category(
             db, user_id, category, parsed_date.year, parsed_date.month
         )
-        db_txn = models.Transaction(
-            user_id=user_id,
-            amount=amount,
-            category=resolved_category,
-            date=parsed_date,
-            note=note,
-            merchant=merchant,
-            source="chat",
-            frequency="daily",
-        )
-        db.add(db_txn)
-        db.commit()
-        db.refresh(db_txn)
-        logged_expenses.append(db_txn)
-
-        return {
-            "status": "logged",
-            "amount": amount,
-            "category": resolved_category,
-            "date": parsed_date.isoformat(),
-        }
+        validated = schemas.TransactionCreate(user_id=user_id, amount=amount, category=category, date=parsed_date, note=note, merchant=merchant, source="chat")
+        if len(proposed_expenses) >= 10:
+            raise ValueError("At most 10 expense proposals per chat request")
+        payload = validated.model_dump(mode="json", exclude={"user_id"})
+        payload["category"] = resolved_category
+        proposal_id = str(uuid.uuid4())
+        db.add(models.ExpenseProposal(id=proposal_id, user_id=user_id, payload=json.dumps(payload), state="pending"))
+        proposed_expenses.append({"id": proposal_id, **payload})
+        return {"status": "awaiting_user_save", "amount": amount, "category": resolved_category, "date": parsed_date.isoformat()}
 
     try:
         reply = llm_coach.chat_reply(
@@ -350,32 +465,54 @@ def coach_chat(
     db.add(models.ChatMessage(user_id=user_id, role="model", content=reply))
     db.commit()
 
-    return {
-        "reply": reply,
-        "logged_expenses": [
-            {
-                "id": t.id,
-                "amount": t.amount,
-                "category": t.category,
-                "date": t.date,
-                "merchant": t.merchant,
-                "note": t.note,
-            }
-            for t in logged_expenses
-        ],
-    }
+    return {"reply": reply, "logged_expenses": [], "proposed_expenses": proposed_expenses}
+
+
+@app.get("/coach/proposals/{user_id}", response_model=list[schemas.ProposedExpense], dependencies=[Depends(auth.authorize)])
+def pending_proposals(user_id: int, db: Session = Depends(get_db)):
+    rows = db.query(models.ExpenseProposal).filter_by(user_id=user_id, state="pending").limit(100).all()
+    return [{"id": p.id, **json.loads(p.payload)} for p in rows]
+
+
+@app.post("/coach/proposals/{proposal_id}/{action}", dependencies=[Depends(auth.authorize)])
+def resolve_proposal(proposal_id: str, action: str, user=Depends(auth.current_user), db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    if action not in {"save", "cancel"}:
+        raise HTTPException(404, "Unknown action")
+    user_id = user.id
+    db.rollback()
+    if db.bind.dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    proposal = db.query(models.ExpenseProposal).filter_by(id=proposal_id, user_id=user_id).with_for_update().first()
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal.state != "pending":
+        if proposal.state == ("saved" if action == "save" else "cancelled"):
+            return {"state": proposal.state, "transaction_id": proposal.transaction_id}
+        raise HTTPException(409, "Proposal already resolved")
+    if action == "save":
+        data = schemas.TransactionCreate(user_id=user_id, **json.loads(proposal.payload))
+        transaction = models.Transaction(**data.model_dump())
+        db.add(transaction)
+        db.flush()
+        proposal.transaction_id = transaction.id
+        proposal.state = "saved"
+    else:
+        proposal.state = "cancelled"
+    db.commit()
+    return {"state": proposal.state, "transaction_id": proposal.transaction_id}
 
 
 # ---------- Smart Anomaly Detection ----------
 
-@app.get("/anomalies/{user_id}", response_model=list[schemas.AnomalyItem])
+@app.get("/anomalies/{user_id}", response_model=list[schemas.AnomalyItem], dependencies=[Depends(auth.authorize)])
 def get_anomalies(user_id: int, year: int, month: int, db: Session = Depends(get_db)):
     return services.get_anomalies(db, user_id, year, month)
 
 
 # ---------- Weekly Digest ----------
 
-@app.get("/coach/digest/{user_id}", response_model=schemas.WeeklyDigestResponse)
+@app.get("/coach/digest/{user_id}", response_model=schemas.WeeklyDigestResponse, dependencies=[Depends(auth.authorize)])
 def get_weekly_digest(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -385,22 +522,22 @@ def get_weekly_digest(user_id: int, db: Session = Depends(get_db)):
 
     try:
         digest_text = llm_coach.get_weekly_digest(user.name, digest)
-    except Exception as e:
-        _raise_for_llm_error(e)
+    except Exception:
+        digest_text = "AI narration is unavailable. The figures below show recorded non-monthly spending over the last seven days; monthly recurring payments are excluded."
 
     return {**digest, "digest_text": digest_text}
 
 
 # ---------- Recurring Subscription Detection ----------
 
-@app.get("/subscriptions/{user_id}", response_model=list[schemas.SubscriptionItem])
+@app.get("/subscriptions/{user_id}", response_model=list[schemas.SubscriptionItem], dependencies=[Depends(auth.authorize)])
 def get_subscriptions(user_id: int, db: Session = Depends(get_db)):
     return services.detect_recurring_subscriptions(db, user_id)
 
 
 # ---------- Goal-Based Savings Simulator ----------
 
-@app.post("/savings-goal/{user_id}", response_model=schemas.SavingsGoalResponse)
+@app.post("/savings-goal/{user_id}", response_model=schemas.SavingsGoalResponse, dependencies=[Depends(auth.authorize)])
 def savings_goal(user_id: int, req: schemas.SavingsGoalRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -414,33 +551,38 @@ def savings_goal(user_id: int, req: schemas.SavingsGoalRequest, db: Session = De
 
     try:
         advice = llm_coach.get_goal_advice(user.name, plan)
-    except Exception as e:
-        _raise_for_llm_error(e)
+    except Exception:
+        advice = "AI narration is unavailable. " + ("The recorded baseline supports this goal within the stated discretionary cuts." if plan["achievable"] else "This goal is not supported by reliable history and reasonable discretionary cuts. Extend the timeline or review income and missing records; fixed costs are protected.")
 
     return {**plan, "advice": advice}
 
 
 # ---------- Automated Ingestion ----------
 
-@app.post("/ingest/sms", response_model=list[schemas.ParsedTransactionPreview])
+@app.post("/ingest/sms", response_model=list[schemas.ParsedTransactionPreview], dependencies=[Depends(auth.authorize)])
 def ingest_sms(req: schemas.SmsIngestRequest):
     """Parses pasted bank SMS text (one message per line) into a preview list.
     Does NOT save anything — call /ingest/commit to actually insert."""
-    parsed = ingestion.parse_sms_text(req.raw_text)
+    try:
+        parsed = ingestion.parse_sms_text(req.raw_text)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     if not parsed:
         raise HTTPException(
             status_code=422,
             detail="No debit transactions could be parsed from that text. "
             "Make sure each SMS is on its own line and mentions an amount (Rs./INR).",
         )
-    return parsed
+    return parsed[:500]
 
 
-@app.post("/ingest/statement", response_model=list[schemas.ParsedTransactionPreview])
+@app.post("/ingest/statement", response_model=list[schemas.ParsedTransactionPreview], dependencies=[Depends(auth.authorize)])
 async def ingest_statement(file: UploadFile = File(...)):
     """Parses an uploaded bank statement (CSV or PDF) into a preview list.
     Does NOT save anything — call /ingest/commit to actually insert."""
-    content = await file.read()
+    content = await file.read(5 * 1024 * 1024 + 1)
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(413, "Upload exceeds 5 MiB")
     filename = (file.filename or "").lower()
 
     try:
@@ -461,12 +603,27 @@ async def ingest_statement(file: UploadFile = File(...)):
             detail="No debit transactions could be identified in this statement. "
             "Check that it has date, description, and debit/withdrawal columns.",
         )
-    return parsed
+    return parsed[:500]
 
 
-@app.post("/ingest/commit", response_model=schemas.CommitIngestResponse)
-def commit_ingest(req: schemas.CommitIngestRequest, db: Session = Depends(get_db)):
+@app.post("/ingest/commit", response_model=schemas.CommitIngestResponse, dependencies=[Depends(auth.authorize)])
+def commit_ingest(req: schemas.CommitIngestRequest, db: Session = Depends(get_db), user=Depends(auth.current_user)):
+    req.user_id = user.id
     """Inserts a reviewed/edited batch of parsed transactions."""
+    if req.idempotency_key:
+        existing = db.query(models.ImportBatch).filter_by(user_id=user.id, batch_key=req.idempotency_key).first()
+        if existing:
+            return {"inserted": existing.inserted}
+        db.add(models.ImportBatch(user_id=user.id, batch_key=req.idempotency_key, inserted=len(req.transactions)))
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = db.query(models.ImportBatch).filter_by(user_id=user.id, batch_key=req.idempotency_key).first()
+            if existing:
+                return {"inserted": existing.inserted}
+            raise
+
     count = 0
     for t in req.transactions:
         resolved_category = services.resolve_transaction_category(
@@ -490,8 +647,9 @@ def commit_ingest(req: schemas.CommitIngestRequest, db: Session = Depends(get_db
 
 # ---------- Monthly Bills ----------
 
-@app.post("/bills")
-def create_bill(bill: schemas.BillCreate, db: Session = Depends(get_db)):
+@app.post("/bills", dependencies=[Depends(auth.authorize)])
+def create_bill(bill: schemas.BillCreate, db: Session = Depends(get_db), user=Depends(auth.current_user)):
+    bill.user_id = user.id
     db_bill = models.Bill(
         user_id=bill.user_id,
         name=bill.name.strip(),
@@ -503,24 +661,21 @@ def create_bill(bill: schemas.BillCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_bill)
 
-    # Give it its own row on the dashboard immediately, even before it's paid.
-    today = date.today()
-    services.ensure_category_budget(
-        db, bill.user_id, bill.category,
-        bill.year or today.year, bill.month or today.month,
-        default_limit=bill.amount,
-    )
-
     return {"id": db_bill.id, "name": db_bill.name, "category": db_bill.category,
             "amount": db_bill.amount, "due_day": db_bill.due_day}
 
 
-@app.get("/bills/{user_id}", response_model=list[schemas.BillStatus])
+@app.get("/bills/upcoming/{user_id}", response_model=list[schemas.BillStatus], dependencies=[Depends(auth.authorize)])
+def upcoming_bills(user_id: int, db: Session = Depends(get_db)):
+    return services.upcoming_bills(db, user_id)
+
+
+@app.get("/bills/{user_id}", response_model=list[schemas.BillStatus], dependencies=[Depends(auth.authorize)])
 def list_bills(user_id: int, year: int, month: int, db: Session = Depends(get_db)):
     return services.get_bills_with_status(db, user_id, year, month)
 
 
-@app.post("/bills/{bill_id}/pay", response_model=schemas.BillStatus)
+@app.post("/bills/{bill_id}/pay", response_model=schemas.BillStatus, dependencies=[Depends(auth.authorize)])
 def pay_bill(bill_id: int, year: int, month: int, db: Session = Depends(get_db)):
     payment = services.mark_bill_paid(db, bill_id, year, month)
     if payment is None:
@@ -533,14 +688,14 @@ def pay_bill(bill_id: int, year: int, month: int, db: Session = Depends(get_db))
     }
 
 
-@app.post("/bills/{bill_id}/unpay", response_model=schemas.BillStatus)
+@app.post("/bills/{bill_id}/unpay", response_model=schemas.BillStatus, dependencies=[Depends(auth.authorize)])
 def unpay_bill(bill_id: int, year: int, month: int, db: Session = Depends(get_db)):
     services.mark_bill_unpaid(db, bill_id, year, month)
     bill = db.query(models.Bill).filter(models.Bill.id == bill_id).first()
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
     today = date.today()
-    status = "overdue" if (today.year == year and today.month == month and today.day > bill.due_day) else "due"
+    status = "overdue" if date(year, month, min(bill.due_day, services.get_days_in_month(year, month))) < today else "due"
     return {
         "id": bill.id, "name": bill.name, "category": bill.category,
         "amount": bill.amount, "due_day": bill.due_day,
@@ -548,7 +703,7 @@ def unpay_bill(bill_id: int, year: int, month: int, db: Session = Depends(get_db
     }
 
 
-@app.delete("/bills/{bill_id}")
+@app.delete("/bills/{bill_id}", dependencies=[Depends(auth.authorize)])
 def delete_bill(bill_id: int, db: Session = Depends(get_db)):
     bill = db.query(models.Bill).filter(models.Bill.id == bill_id).first()
     if not bill:
@@ -558,23 +713,15 @@ def delete_bill(bill_id: int, db: Session = Depends(get_db)):
     return {"deleted": True, "id": bill_id}
 
 
-# ---------- Admin ----------
-
-@app.post("/admin/reset-database")
-def reset_database(key: str):
-    """Wipes and recreates all tables. Requires ADMIN_RESET_KEY to be set as an
-    environment variable and passed as a query param. Useful for deployed
-    environments where you can't just delete the .db file directly."""
-    if not ADMIN_RESET_KEY:
-        raise HTTPException(status_code=503, detail="ADMIN_RESET_KEY is not configured on this server.")
-    if key != ADMIN_RESET_KEY:
-        raise HTTPException(status_code=403, detail="Invalid reset key.")
-
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    return {"status": "Database reset successfully."}
-
-
 @app.get("/")
 def root():
     return {"status": "SmartSpend AI backend running"}
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

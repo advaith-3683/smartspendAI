@@ -1,0 +1,27 @@
+# Prepared configuration only. Do not deploy until DATABASE_URL and origins are set.
+services:
+  - type: web
+    name: smartspend-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: smartspend backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage_database.py migrate && python manage_database.py verify && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --no-proxy-headers
+    healthCheckPath: /
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: COOKIE_SECURE
+        value: 'true'
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: GEMINI_API_KEY
+        sync: false

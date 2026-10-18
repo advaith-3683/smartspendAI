@@ -1,11 +1,47 @@
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel
+from decimal import Decimal
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator, Field
 
 
-class UserCreate(BaseModel):
+class InputModel(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, allow_inf_nan=False)
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def validate_fields(cls, value, info):
+        name = info.field_name
+        if name in {"amount", "monthly_income", "monthly_limit", "item_cost", "target_amount"}:
+            value = Decimal(str(value))
+            if not value.is_finite() or value > Decimal("1000000000") or value < 0 or (name != "monthly_income" and value == 0):
+                raise ValueError("Money must be finite, positive (income may be zero), and at most 1 billion")
+            if value != value.quantize(Decimal("0.01")):
+                raise ValueError("Money allows at most two decimal places")
+        if name in {"name", "category", "item_name", "message", "raw_text"} and not value:
+            raise ValueError("Text must not be empty")
+        if isinstance(value, str) and len(value) > {"message": 4000, "raw_text": 100000, "note": 1000, "password": 128}.get(name, 100):
+            raise ValueError("Text exceeds allowed length")
+        if name == "month" and value is not None and not 1 <= value <= 12:
+            raise ValueError("Invalid month")
+        if name == "year" and value is not None and not 1900 <= value <= 2200:
+            raise ValueError("Invalid year")
+        if name == "due_day" and not 1 <= value <= 31:
+            raise ValueError("Invalid due day")
+        if name == "months" and not 1 <= value <= 600:
+            raise ValueError("Months must be between 1 and 600")
+        if name == "source" and value not in {"manual", "statement", "sms", "bill", "chat"}:
+            raise ValueError("Invalid source")
+        if name == "frequency" and value not in {"daily", "monthly", "one_time"}:
+            raise ValueError("Invalid frequency")
+        if name == "date" and not 1900 <= value.year <= 2200:
+            raise ValueError("Invalid date")
+        return value
+
+
+
+class UserCreate(InputModel):
     name: str
-    monthly_income: float
+    monthly_income: Decimal
 
 
 class UserOut(BaseModel):
@@ -17,10 +53,10 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
-class BudgetCreate(BaseModel):
+class BudgetCreate(InputModel):
     user_id: int
     category: str
-    monthly_limit: float
+    monthly_limit: Decimal
     month: int
     year: int
 
@@ -37,9 +73,9 @@ class BudgetOut(BaseModel):
         from_attributes = True
 
 
-class TransactionCreate(BaseModel):
+class TransactionCreate(InputModel):
     user_id: int
-    amount: float
+    amount: Decimal
     category: str
     date: date
     note: Optional[str] = None
@@ -74,19 +110,22 @@ class PaceStatus(BaseModel):
     status: str  # "on_track" | "at_risk" | "over_budget"
 
 
-class BuyDecisionRequest(BaseModel):
+class BuyDecisionRequest(InputModel):
+    year: int
+    month: int
     user_id: int
     category: str
     item_name: str
-    item_cost: float
+    item_cost: Decimal
 
 
 class BuyDecisionResponse(BaseModel):
+    budget_exists: bool = True
     category: str
     item_cost: float
-    remaining_budget_before: float
-    remaining_budget_after: float
-    would_exceed_budget: bool
+    remaining_budget_before: Optional[float]
+    remaining_budget_after: Optional[float]
+    would_exceed_budget: Optional[bool]
     message: str
 
 
@@ -108,7 +147,7 @@ class ChatMessageOut(BaseModel):
         from_attributes = True
 
 
-class CoachChatRequest(BaseModel):
+class CoachChatRequest(InputModel):
     message: str
 
 
@@ -121,7 +160,17 @@ class LoggedExpense(BaseModel):
     note: Optional[str] = None
 
 
+class ProposedExpense(BaseModel):
+    id: str
+    amount: float
+    category: str
+    date: date
+    merchant: Optional[str] = None
+    note: Optional[str] = None
+
+
 class CoachChatResponse(BaseModel):
+    proposed_expenses: list[ProposedExpense] = Field(default_factory=list)
     reply: str
     logged_expenses: list[LoggedExpense] = []
 
@@ -132,8 +181,8 @@ class AnomalyItem(BaseModel):
     message: str
 
 
-class SavingsGoalRequest(BaseModel):
-    target_amount: float
+class SavingsGoalRequest(InputModel):
+    target_amount: Decimal
     months: int
 
 
@@ -146,6 +195,9 @@ class SavingsGoalCategoryPlan(BaseModel):
 
 
 class SavingsGoalResponse(BaseModel):
+    baseline_note: str
+    history_reliable: bool
+    history_months: int
     target_amount: float
     months: int
     monthly_savings_needed: float
@@ -178,13 +230,13 @@ class ParsedTransactionPreview(BaseModel):
     frequency: str = "daily"
 
 
-class SmsIngestRequest(BaseModel):
+class SmsIngestRequest(InputModel):
     user_id: int
     raw_text: str
 
 
-class CommitTransaction(BaseModel):
-    amount: float
+class CommitTransaction(InputModel):
+    amount: Decimal
     category: str
     merchant: Optional[str] = None
     date: date
@@ -193,26 +245,28 @@ class CommitTransaction(BaseModel):
     frequency: str = "daily"
 
 
-class CommitIngestRequest(BaseModel):
+class CommitIngestRequest(InputModel):
+    idempotency_key: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]{16,64}$")
     user_id: int
-    transactions: list[CommitTransaction]
+    transactions: list[CommitTransaction] = Field(min_length=1, max_length=500)
 
 
 class CommitIngestResponse(BaseModel):
     inserted: int
 
 
-class BillCreate(BaseModel):
+class BillCreate(InputModel):
     user_id: int
     name: str
     category: str
-    amount: float
+    amount: Decimal
     due_day: int
     year: Optional[int] = None
     month: Optional[int] = None
 
 
 class BillStatus(BaseModel):
+    due_date: Optional[date] = None
     id: int
     name: str
     category: str
