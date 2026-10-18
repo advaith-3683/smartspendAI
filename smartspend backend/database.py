@@ -1,5 +1,6 @@
 """Durable SQL storage: stable local SQLite path or hosted PostgreSQL."""
 import os
+from database_diagnostics import DatabasePolicyError
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).with_name('.env'))
@@ -19,12 +20,12 @@ def build_engine(url=DATABASE_URL):
         # Force port parsing here so malformed credentials cannot leak through an exception.
         parsed.port
     except Exception:
-        raise RuntimeError('Invalid DATABASE_URL. Use a psycopg URI with a percent-encoded password; credentials are omitted.') from None
+        raise DatabasePolicyError('invalid_url') from None
     if parsed.drivername in {'postgres', 'postgresql'}:
         parsed = parsed.set(drivername='postgresql+psycopg')
         url = parsed
     if parsed.get_backend_name() == 'postgresql' and parsed.drivername != 'postgresql+psycopg':
-        raise RuntimeError('PostgreSQL requires the postgresql+psycopg:// URL scheme (psycopg 3)')
+        raise DatabasePolicyError('driver_required')
     production = os.getenv('APP_ENV', 'development') == 'production'
     if parsed.get_backend_name() == 'sqlite':
         path = Path(parsed.database or '')
@@ -42,9 +43,9 @@ def build_engine(url=DATABASE_URL):
         raise RuntimeError('Supported databases: SQLite and PostgreSQL')
     supabase_pooler = (parsed.host or '').lower().endswith('.pooler.supabase.com')
     if supabase_pooler and parsed.port != 5432:
-        raise RuntimeError('Use the Supabase Session pooler URI on port 5432, not transaction mode')
+        raise DatabasePolicyError('session_pooler')
     if (production or supabase_pooler) and parsed.query.get('sslmode') not in {'require', 'verify-ca', 'verify-full'}:
-        raise RuntimeError('Production PostgreSQL DATABASE_URL must require TLS (sslmode=require or stronger)')
+        raise DatabasePolicyError('tls_required')
     return create_engine(url, pool_pre_ping=True, pool_size=3, max_overflow=2, pool_timeout=10, pool_recycle=300, hide_parameters=True, connect_args={'connect_timeout': 15, 'prepare_threshold': None})
 
 

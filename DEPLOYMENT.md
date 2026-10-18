@@ -116,3 +116,18 @@ Before a live migration/transfer, back up the source and any existing target. Ke
 - If transfer fails, target row inserts roll back; source and backup remain. Re-audit the target before retrying.
 - After a later cutover, stop writers before rollback. Repointing to an old SQLite file would hide all new Supabase transactions/chat/accounts written after cutover. Export/reconcile those writes first; do not silently abandon them. A Render free-service SQLite file is not a durable rollback destination: use a real persistent disk or a backed-up PostgreSQL database.
 - Match the schema/code/money format when restoring. Never lower a version marker, divide cents manually, drop financial tables or restore over Supabase-managed schemas.
+
+
+## Sanitized startup diagnostics
+
+Database command failures write one structured JSON diagnostic to stderr and exit nonzero. Fields identify `stage` (`connection`, `migration`, or `security_verification`), outer/driver exception class, validated PostgreSQL `sqlstate` when present, a fixed category and a fixed explanation. Missing SQLSTATE is emitted as null; it is not invented. Configuration/driver import failures are also sanitized. No raw exception message, connection URL, password, SQL, SQL parameter or financial record is printed. Fixed policy codes identify RLS/privilege/version refusals without bypassing them.
+
+Typical categories: `authentication` (28P01/28000), `dns`, `timeout`, `network_or_availability`, `tls`, `insufficient_privileges` (42501), `sql_or_schema` (for example 42601/42P01/42883), and `security_audit` (the app's explicit policy checks). The error stage remains security_verification if the migration's final audit fails; the transaction still rolls back. Use these safe fields to diagnose the issue; do not paste raw Render environment values or unsanitized driver errors.
+
+The Render dashboard start command must use **main:app**, not `uvicorn main`:
+
+```text
+python manage_database.py migrate && python manage_database.py verify && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --no-proxy-headers
+```
+
+The checked-in render.yaml already uses main:app. A Git push does not itself prove an existing dashboard command was updated. This diagnostics change does not disable TLS, remove the audit, reset tables or establish that the live Supabase connection has passed.

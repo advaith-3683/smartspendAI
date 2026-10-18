@@ -158,3 +158,12 @@ No real .env was changed, no real/production PostgreSQL connection was made, no 
 ## Backend commit preparation
 
 Checked local main tracking origin/main and the GitHub origin remote; main was the only remote branch advertised. Render dashboard branch settings were not accessible for independent verification. Backend source/tests and deployment documentation were staged separately from frontend changes. Pre-commit full backend discovery ran 31 tests: 30 passed and the opt-in live PostgreSQL test was skipped. Staged whitespace checks passed; a credential-pattern/excluded-path scan found no matches in 26 staged files. Real .env files, databases, backups, virtual environments and all frontend implementation changes were excluded. No manual Render deployment is part of the Git commit/push operation.
+
+
+## Sanitized database startup diagnostics fix
+
+Replaced the generic database CLI failure with structured stderr JSON identifying connection/migration/security_verification, exception/driver class, validated PostgreSQL SQLSTATE and a fixed category/explanation. Raw driver messages, SQL/parameters, URIs/passwords and financial values are never emitted by the diagnostics formatter. Configuration/import failures and safe policy refusals also follow this path. A migration audit failure keeps its verification stage and still aborts the transaction; TLS enforcement, private-schema RLS, ACL checks, FastAPI ownership and existing records were not weakened or reset.
+
+Added 12 targeted tests covering authentication, DNS/network/timeout/TLS, insufficient privileges, SQL/schema failures, SQLAlchemy wrapper/driver SQLSTATE, safe policy messages, malformed SQLSTATE, secret-bearing exception redaction, bootstrap failures, successful/nonzero CLI exit behavior, and migration/audit rollback. Full local discovery ran 43 tests: **42 passed, one isolated live PostgreSQL test skipped**. Production was not contacted and the live Render failure has not been diagnosed yet; the next attempted startup will provide the safe category/class/SQLSTATE needed to identify it.
+
+DEPLOYMENT.md clarifies that Uvicorn must use `main:app`; the reported dashboard command used `uvicorn main`, while checked-in render.yaml already had the correct import target. Only the backend diagnostics fix/tests and related documentation are included in this commit scope. No real .env/database was changed, and no Render deployment was invoked.
