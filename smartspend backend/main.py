@@ -1,12 +1,16 @@
 import json
 import uuid
 import os
+import time
+from startup_telemetry import startup_stage
+print(json.dumps({'event': 'startup_stage', 'stage': 'application_import', 'status': 'started'}), flush=True)
+_import_started = time.monotonic()
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from threading import Lock
-import time
+from contextlib import asynccontextmanager
 import auth
 from migrations import migrate
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,18 +28,34 @@ ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,h
 if "*" in ORIGINS:
     raise RuntimeError("CORS_ORIGINS must contain exact origins")
 
-if engine.dialect.name == "postgresql":
-    from postgres_storage import verify_postgres
-    verify_postgres(engine, Base.metadata)
-else:
-    migrate(engine, Base.metadata)
+@asynccontextmanager
+async def lifespan(app):
+    global DUMMY_HASH
+    try:
+        with startup_stage('database_security'):
+            if engine.dialect.name == 'postgresql':
+                from postgres_storage import verify_postgres
+                verify_postgres(engine, Base.metadata)
+            else:
+                migrate(engine, Base.metadata)
+        with startup_stage('authentication'):
+            DUMMY_HASH = auth.password_hash('dummy-password-not-used')
+    except Exception as error:
+        from database_diagnostics import diagnostic_json
+        print(diagnostic_json(error, 'security_verification'), flush=True)
+        raise RuntimeError('Required startup check failed; see sanitized diagnostics.') from None
+    try:
+        yield
+    finally:
+        engine.dispose()
 
-app = FastAPI(title="SmartSpend AI")
+
+app = FastAPI(title="SmartSpend AI", lifespan=lifespan)
 
 
 
 
-DUMMY_HASH = auth.password_hash("dummy-password-not-used")
+DUMMY_HASH = None  # Initialized by required lifespan startup before requests.
 _rate_lock = Lock()
 _rate_buckets = {}
 
@@ -754,3 +774,5 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+print(json.dumps({"event": "startup_stage", "stage": "application_import", "status": "complete", "elapsed_seconds": round(time.monotonic() - _import_started, 3)}), flush=True)

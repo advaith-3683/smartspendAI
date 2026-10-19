@@ -154,7 +154,7 @@ class Regressions(unittest.TestCase):
         from unittest.mock import patch, MagicMock
         import llm_coach
         model = MagicMock(); model.generate_content.return_value.text = 'x' * 10000
-        with patch.object(llm_coach, '_ensure_configured'), patch.object(llm_coach.genai, 'GenerativeModel', return_value=model):
+        with patch.object(llm_coach, '_ensure_configured'), patch.object(llm_coach, 'genai', MagicMock(GenerativeModel=MagicMock(return_value=model))):
             self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [])), 8000)
             kwargs = model.generate_content.call_args.kwargs
             self.assertEqual(kwargs['request_options']['timeout'], 30)

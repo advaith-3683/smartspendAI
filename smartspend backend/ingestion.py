@@ -1,9 +1,9 @@
+from __future__ import annotations
 import io
 import re
 from decimal import Decimal
 from datetime import date, datetime
 
-import pandas as pd
 
 # ---------- Categorization ----------
 
@@ -147,6 +147,7 @@ def _find_column(columns: list[str], hints: list[str]) -> str | None:
 
 
 def _dataframe_to_transactions(df: pd.DataFrame, today: date) -> list[dict]:
+    import pandas as pd
     columns = list(df.columns)
     date_col = _find_column(columns, DATE_COL_HINTS)
     desc_col = _find_column(columns, DESC_COL_HINTS)
@@ -217,6 +218,7 @@ def _dataframe_to_transactions(df: pd.DataFrame, today: date) -> list[dict]:
 
 
 def parse_csv_statement(file_bytes: bytes, today: date = None) -> list[dict]:
+    import pandas as pd
     if today is None:
         today = date.today()
     df = pd.read_csv(io.BytesIO(file_bytes))
@@ -226,6 +228,7 @@ def parse_csv_statement(file_bytes: bytes, today: date = None) -> list[dict]:
 def parse_pdf_statement(file_bytes: bytes, today: date = None) -> list[dict]:
     if today is None:
         today = date.today()
+    import pandas as pd
     import pdfplumber
 
     all_transactions = []

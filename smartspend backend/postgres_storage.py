@@ -4,6 +4,7 @@ No Supabase Auth, auth.uid policies, public-schema DDL or managed-schema writes.
 The backend uses its existing sessions/ownership checks with a server-only DB role.
 """
 import os
+import time
 from sqlalchemy import MetaData, inspect, text
 from database_diagnostics import DatabasePolicyError, database_stage
 
@@ -19,9 +20,17 @@ def private_metadata(metadata):
     return result
 
 
-def audit_connection(connection, metadata):
+def audit_connection(connection, metadata, deadline=None):
+    def execute(statement, parameters=None):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Database security verification deadline exceeded")
+        result = connection.execute(statement, parameters) if parameters is not None else connection.execute(statement)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Database security verification deadline exceeded")
+        return result
+
     expected = {table.name for table in metadata.sorted_tables} | {'smartspend_schema'}
-    rows = connection.execute(text('''
+    rows = execute(text('''
         SELECT c.oid, c.relname, c.relrowsecurity, c.relforcerowsecurity,
                c.relowner = (SELECT oid FROM pg_roles WHERE rolname=current_user) AS owned,
                r.rolbypassrls OR r.rolsuper AS bypass
@@ -31,7 +40,7 @@ def audit_connection(connection, metadata):
     '''), {'schema': SCHEMA}).mappings().all()
     if {row['relname'] for row in rows} != expected:
         raise DatabasePolicyError('missing_tables')
-    public_access = connection.execute(text('''
+    public_access = execute(text('''
         SELECT EXISTS (
           SELECT 1 FROM pg_namespace n,
           LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a
@@ -50,10 +59,10 @@ def audit_connection(connection, metadata):
     '''), {'schema': SCHEMA}).scalar()
     if public_access:
         raise DatabasePolicyError('public_privileges')
-    policies = connection.execute(text('SELECT count(*) FROM pg_policies WHERE schemaname=:schema'), {'schema': SCHEMA}).scalar()
+    policies = execute(text('SELECT count(*) FROM pg_policies WHERE schemaname=:schema'), {'schema': SCHEMA}).scalar()
     if policies:
         raise DatabasePolicyError('unexpected_policies')
-    roles = connection.execute(text('SELECT rolname FROM pg_roles WHERE rolname IN (\'anon\',\'authenticated\',\'service_role\')')).scalars().all()
+    roles = execute(text('SELECT rolname FROM pg_roles WHERE rolname IN (\'anon\',\'authenticated\',\'service_role\')')).scalars().all()
     for row in rows:
         if not row['relrowsecurity']:
             raise DatabasePolicyError('rls_disabled')
@@ -63,7 +72,7 @@ def audit_connection(connection, metadata):
         # The privilege call is a separate bound query, not an optimizer-inlined
         # subquery relying on a relkind predicate in the same SQL expression.
         for role in roles:
-            access = connection.execute(text('''
+            access = execute(text('''
                 SELECT has_schema_privilege(:role, :schema, 'USAGE,CREATE')
                     OR has_table_privilege(:role, CAST(:oid AS oid), 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
                     OR has_any_column_privilege(:role, CAST(:oid AS oid), 'SELECT,INSERT,UPDATE,REFERENCES')
@@ -71,7 +80,7 @@ def audit_connection(connection, metadata):
             if access:
                 raise DatabasePolicyError('api_privileges')
     for role in roles:
-        sequence_access = connection.execute(text('''
+        sequence_access = execute(text('''
             SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
              WHERE n.nspname=:schema AND c.relkind='S'
              -- WHERE predicates can be reordered; guard the object-specific call.
@@ -82,7 +91,7 @@ def audit_connection(connection, metadata):
         '''), {'role': role, 'schema': SCHEMA}).scalar()
         if sequence_access:
             raise DatabasePolicyError('sequence_privileges')
-    version = connection.execute(text('SELECT version FROM smartspend.smartspend_schema')).scalars().all()
+    version = execute(text('SELECT version FROM smartspend.smartspend_schema')).scalars().all()
     if version != [VERSION]:
         raise DatabasePolicyError('schema_version')
     return {'schema': SCHEMA, 'version': VERSION, 'tables_checked': len(rows),
@@ -171,7 +180,9 @@ def verify_postgres(engine, metadata):
         connection = engine.connect()
     try:
         with database_stage('security_verification'):
-            return audit_connection(connection, metadata)
+            connection.execute(text("SET LOCAL statement_timeout = '15s'"))
+            connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+            return audit_connection(connection, metadata, deadline=time.monotonic() + 45)
     finally:
         with database_stage('connection'):
             connection.close()

@@ -1,8 +1,7 @@
 import os
-import google.generativeai as genai
-from dotenv import load_dotenv
-
-load_dotenv()
+import importlib
+import threading
+from startup_telemetry import startup_stage
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
@@ -10,18 +9,42 @@ GENERATION_CONFIG = {"max_output_tokens": 1200}
 REQUEST_OPTIONS = {"timeout": 30, "retry": None}
 
 _configured = False
+genai = None
+_initialization_started = False
+_initialization_done = threading.Event()
+_initialization_lock = threading.Lock()
+AI_INITIALIZATION_TIMEOUT = 5
+
+
+def _initialize_sdk():
+    global genai, _configured
+    try:
+        with startup_stage('optional_ai_initialization'):
+            sdk = importlib.import_module('google.generativeai')
+            sdk.configure(api_key=GEMINI_API_KEY)
+            genai = sdk
+            _configured = True
+    except Exception:
+        # No provider exception/configuration/prompt details escape this worker.
+        pass
+    finally:
+        _initialization_done.set()
 
 
 def _ensure_configured():
-    global _configured
+    global _initialization_started
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. Add it to a .env file in the backend folder: "
-            "GEMINI_API_KEY=your_key_here"
-        )
+        raise RuntimeError('AI service is unavailable. Ask the operator to configure AI access.')
+    if _configured:
+        return
+    with _initialization_lock:
+        if not _initialization_started:
+            _initialization_started = True
+            threading.Thread(target=_initialize_sdk, name='optional-ai-init', daemon=True).start()
+    if not _initialization_done.wait(AI_INITIALIZATION_TIMEOUT):
+        raise RuntimeError('AI initialization is unavailable. Retry shortly or contact support.')
     if not _configured:
-        genai.configure(api_key=GEMINI_API_KEY)
-        _configured = True
+        raise RuntimeError('AI initialization failed. Ask the operator to check AI dependencies and restart the service.')
 
 
 def build_prompt(user_name: str, monthly_income: float, pace_data: list[dict]) -> str:
