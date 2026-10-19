@@ -89,6 +89,37 @@ def audit_connection(connection, metadata):
             'api_roles_checked': roles, 'rls': 'enabled, no policies', 'public_access': False}
 
 
+def lock_and_check_empty_v4(connection, private, existing):
+    """Narrow backup exemption: complete v4 only, writer locks held to commit.
+
+    Never trust a prior read-only observation or rows hidden by RLS.
+    Older versions and unexpected/partial schemas still require a backup.
+    """
+    legacy = {table.name for table in private.sorted_tables} - {'email_accounts'}
+    if existing != legacy | {'smartspend_schema'}:
+        return False
+    connection.execute(text("SET LOCAL lock_timeout = '10s'"))
+    quoted = connection.dialect.identifier_preparer.quote_identifier
+    names = ', '.join('smartspend.' + quoted(name) for name in sorted(existing))
+    connection.execute(text('LOCK TABLE ' + names + ' IN SHARE ROW EXCLUSIVE MODE'))
+    # Re-read the marker after acquiring the table locks.
+    if connection.execute(text('SELECT version FROM smartspend.smartspend_schema')).scalars().all() != [4]:
+        return False
+    visible = connection.execute(text('''
+        SELECT c.relname, (r.rolsuper OR r.rolbypassrls OR
+               (c.relowner=r.oid AND NOT c.relforcerowsecurity)) AS full_visibility
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        CROSS JOIN pg_roles r
+        WHERE n.nspname=:schema AND c.relkind IN ('r','p') AND r.rolname=current_user
+    '''), {'schema': SCHEMA}).mappings().all()
+    if {row['relname'] for row in visible} != existing or not all(row['full_visibility'] for row in visible):
+        return False
+    for name in sorted(legacy):
+        if connection.execute(text('SELECT EXISTS (SELECT 1 FROM smartspend.' + quoted(name) + ')')).scalar_one():
+            return False
+    return True
+
+
 def migrate_postgres(engine, metadata):
     with database_stage('migration'):
         private = private_metadata(metadata)
@@ -96,6 +127,9 @@ def migrate_postgres(engine, metadata):
         connection = engine.connect()
     try:
         with database_stage('migration'), connection.begin():
+            # Emptiness must see writers committed before our table locks, even
+            # when a server/session default uses repeatable-read isolation.
+            connection.execute(text('SET TRANSACTION ISOLATION LEVEL READ COMMITTED'))
             connection.execute(text('SELECT pg_advisory_xact_lock(71480321)'))
             connection.execute(text('CREATE SCHEMA IF NOT EXISTS smartspend'))
             existing = set(inspect(connection).get_table_names(schema=SCHEMA))
@@ -107,7 +141,8 @@ def migrate_postgres(engine, metadata):
                 if versions not in ([2], [3], [4], [5]):
                     raise DatabasePolicyError('schema_version')
                 if versions != [VERSION] and os.getenv('POSTGRES_BACKUP_CONFIRMED') != 'true':
-                    raise DatabasePolicyError('backup_required')
+                    if versions != [4] or not lock_and_check_empty_v4(connection, private, existing):
+                        raise DatabasePolicyError('backup_required')
             # Only this dedicated schema is affected. Supabase-managed schemas stay untouched.
             private.create_all(connection)
             connection.execute(text('CREATE TABLE IF NOT EXISTS smartspend.smartspend_schema (version INTEGER PRIMARY KEY)'))
