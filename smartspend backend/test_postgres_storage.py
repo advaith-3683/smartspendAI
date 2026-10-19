@@ -73,6 +73,49 @@ class PostgresOfflineTests(unittest.TestCase):
         self.assertNotIn('placeholder', str(error.exception))
         self.assertNotIn('invalid-secret-port', str(error.exception))
 
+    def test_sequence_call_is_case_guarded_with_bound_filters(self):
+        from unittest.mock import MagicMock
+        metadata = MetaData()
+        Table('example', metadata, Column('id', Integer, primary_key=True))
+        connection = MagicMock()
+        catalog = MagicMock()
+        catalog.mappings.return_value.all.return_value = [
+            {'relname': name, 'oid': index, 'relrowsecurity': True, 'relforcerowsecurity': False, 'owned': True, 'bypass': False}
+            for index, name in enumerate(('example', 'smartspend_schema'), 10)]
+        def scalar(value):
+            result = MagicMock(); result.scalar.return_value = value
+            return result
+        roles = MagicMock(); roles.scalars.return_value.all.return_value = ['anon']
+        version = MagicMock(); version.scalars.return_value.all.return_value = [4]
+        connection.execute.side_effect = [catalog, scalar(False), scalar(0), roles,
+                                          scalar(False), scalar(False), scalar(False), version]
+        self.assertFalse(audit_connection(connection, metadata)['public_access'])
+        statement, bindings = connection.execute.call_args_list[-2].args
+        sql = str(statement)
+        self.assertRegex(sql, r"(?s)CASE WHEN c\.relkind = 'S'\s+THEN has_sequence_privilege\(:role, c\.oid, 'USAGE,SELECT,UPDATE'\)\s+ELSE false\s+END")
+        self.assertIn("n.nspname=:schema AND c.relkind='S'", sql)
+        self.assertEqual(bindings, {'role': 'anon', 'schema': 'smartspend'})
+
+    def test_forbidden_sequence_privileges_still_fail_audit(self):
+        from unittest.mock import MagicMock
+        from database_diagnostics import DatabasePolicyError
+        metadata = MetaData()
+        Table('example', metadata, Column('id', Integer, primary_key=True))
+        connection = MagicMock()
+        catalog = MagicMock()
+        catalog.mappings.return_value.all.return_value = [
+            {'relname': name, 'oid': index, 'relrowsecurity': True, 'relforcerowsecurity': False, 'owned': True, 'bypass': False}
+            for index, name in enumerate(('example', 'smartspend_schema'), 10)]
+        def scalar(value):
+            result = MagicMock(); result.scalar.return_value = value
+            return result
+        roles = MagicMock(); roles.scalars.return_value.all.return_value = ['anon']
+        connection.execute.side_effect = [catalog, scalar(False), scalar(0), roles,
+                                          scalar(False), scalar(False), scalar(True)]
+        with self.assertRaises(DatabasePolicyError) as caught:
+            audit_connection(connection, metadata)
+        self.assertEqual(caught.exception.code, 'sequence_privileges')
+
 
 if __name__ == '__main__':
     unittest.main()

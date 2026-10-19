@@ -167,3 +167,24 @@ Replaced the generic database CLI failure with structured stderr JSON identifyin
 Added 12 targeted tests covering authentication, DNS/network/timeout/TLS, insufficient privileges, SQL/schema failures, SQLAlchemy wrapper/driver SQLSTATE, safe policy messages, malformed SQLSTATE, secret-bearing exception redaction, bootstrap failures, successful/nonzero CLI exit behavior, and migration/audit rollback. Full local discovery ran 43 tests: **42 passed, one isolated live PostgreSQL test skipped**. Production was not contacted and the live Render failure has not been diagnosed yet; the next attempted startup will provide the safe category/class/SQLSTATE needed to identify it.
 
 DEPLOYMENT.md clarifies that Uvicorn must use `main:app`; the reported dashboard command used `uvicorn main`, while checked-in render.yaml already had the correct import target. Only the backend diagnostics fix/tests and related documentation are included in this commit scope. No real .env/database was changed, and no Render deployment was invoked.
+
+
+## Sequence privilege audit evaluation-order fix - 19 October 2026
+
+Confirmed an unsafe SQL expression in audit_connection: `relkind='S' AND has_sequence_privilege(...)` permits PostgreSQL's optimizer to evaluate the function for a non-sequence pg_class row. WHERE clause order or wrapping the expression in an EXISTS/subquery is not an evaluation barrier. PostgreSQL documents the expression-order rule at https://www.postgresql.org/docs/current/sql-expressions.html#SYNTAX-EXPRESS-EVAL.
+
+Exact production change: retained the schema filter, relkind filter and role/schema bind parameters, and guarded has_sequence_privilege inside a row-dependent `CASE WHEN c.relkind = 'S' THEN ... ELSE false END`. The audit is called inside migrate_postgres before transaction commit, and separately by verify_postgres/startup. Both paths now use the guard. No RLS, ACL, ownership, TLS, version or rollback checks were removed or relaxed.
+
+Other calls reviewed: has_table_privilege and has_any_column_privilege receive table OIDs already materialized by a completed Python catalog fetch, in separate bound SQL statements. This is an application execution boundary, not a WHERE/subquery ordering assumption; PostgreSQL cannot inline those calls into the previous catalog query. Added a maintenance comment documenting that distinction. has_schema_privilege receives the bound application-schema name, not a mixed relation OID. acldefault receives a selected object-kind code and owner-role OID, and aclexplode receives ACL arrays; neither is a relation-type-specific OID privilege call. The transfer's pg_get_serial_sequence uses explicit metadata table names, not a mixed-object catalog predicate. No additional instance of this evaluation-order hazard was found.
+
+Added two offline tests: assert CASE placement and bound schema/role filters in the SQL actually emitted by the audit; assert forbidden sequence privileges still raise the sequence_privileges policy error. Added a real PostgreSQL regression using a confirmed disposable database with ordinary app tables and SERIAL sequences: migration and verification must complete without WrongObjectType; a temporary USAGE grant to anon must be detected specifically as sequence_privileges; a savepoint rollback restores the grant and the audit must pass again. No roles are created and no tables/data are dropped. The existing isolated-target guard is reused for both live tests.
+
+Actual results: full backend discovery ran **46 tests: 44 passed, two live PostgreSQL tests skipped**. This includes existing diagnostics, RLS/ACL refusal, ownership, TLS configuration and rollback tests. No SMARTSPEND_TEST_POSTGRES_URL was supplied, and no local PostgreSQL/docker tooling was available. **The new real PostgreSQL WrongObjectType/forbidden-grant regression was not run**; mock SQL-shape/security tests are not live PostgreSQL evidence. Python syntax checks and backend whitespace checks passed.
+
+To run only the new real regression later, from the backend directory with a separate disposable PostgreSQL URL and the existing explicit disposable-database confirmation configured securely:
+
+```text
+python -m unittest -v test_postgres_integration.RealPostgresTests.test_mixed_relations_and_forbidden_sequence_privileges
+```
+
+Production and the existing financial database were not contacted or changed. POSTGRES_BACKUP_CONFIRMED was not set. Raw exceptions/secrets were not printed. Unrelated frontend edits were left untouched. The follow-up commit scope is limited to this audit fix, its regression tests and this report. No deployment is part of the Git commit/push operation.

@@ -59,6 +59,9 @@ def audit_connection(connection, metadata):
             raise DatabasePolicyError('rls_disabled')
         if not row['bypass'] and (not row['owned'] or row['relforcerowsecurity']):
             raise DatabasePolicyError('backend_rls_access')
+        # These table OIDs came from a completed catalog fetch into Python.
+        # The privilege call is a separate bound query, not an optimizer-inlined
+        # subquery relying on a relkind predicate in the same SQL expression.
         for role in roles:
             access = connection.execute(text('''
                 SELECT has_schema_privilege(:role, :schema, 'USAGE,CREATE')
@@ -71,7 +74,11 @@ def audit_connection(connection, metadata):
         sequence_access = connection.execute(text('''
             SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
              WHERE n.nspname=:schema AND c.relkind='S'
-             AND has_sequence_privilege(:role, c.oid, 'USAGE,SELECT,UPDATE'))
+             -- WHERE predicates can be reordered; guard the object-specific call.
+             AND CASE WHEN c.relkind = 'S'
+                      THEN has_sequence_privilege(:role, c.oid, 'USAGE,SELECT,UPDATE')
+                      ELSE false
+                 END)
         '''), {'role': role, 'schema': SCHEMA}).scalar()
         if sequence_access:
             raise DatabasePolicyError('sequence_privileges')

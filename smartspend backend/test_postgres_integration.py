@@ -12,13 +12,8 @@ CONFIRMED = os.getenv('SMARTSPEND_TEST_POSTGRES_CONFIRM') == 'disposable-smartsp
 
 @unittest.skipUnless(TEST_URL and CONFIRMED, 'No explicitly confirmed isolated PostgreSQL test database supplied')
 class RealPostgresTests(unittest.TestCase):
-    def test_private_tables_security_and_persistence(self):
-        from sqlalchemy import select, func, text
-        from database import Base, build_engine
-        import models, auth
-        from postgres_storage import private_metadata, migrate_postgres, verify_postgres
-        from decimal import Decimal
-        import uuid
+    def isolated_engine(self):
+        from database import build_engine
         engine = build_engine(TEST_URL)
         if engine.dialect.name != 'postgresql':
             self.fail('Isolated integration URL must select PostgreSQL')
@@ -32,6 +27,16 @@ class RealPostgresTests(unittest.TestCase):
                 return (url.host, url.port, url.database, project)
             if identity(configured_url) == identity(test_url):
                 self.fail('Refusing to test the configured application database; supply a separate disposable database')
+        return engine
+
+    def test_private_tables_security_and_persistence(self):
+        from sqlalchemy import select, func, text
+        from database import Base, build_engine
+        import models, auth
+        from postgres_storage import private_metadata, migrate_postgres, verify_postgres
+        from decimal import Decimal
+        import uuid
+        engine = self.isolated_engine()
         tables = private_metadata(Base.metadata)
         try:
             first = migrate_postgres(engine, tables)
@@ -59,6 +64,43 @@ class RealPostgresTests(unittest.TestCase):
                                 connection.execute(text(operation))
                         finally:
                             transaction.rollback()
+        finally:
+            engine.dispose()
+
+    def test_mixed_relations_and_forbidden_sequence_privileges(self):
+        from sqlalchemy import text
+        from database import Base
+        import models, auth
+        from postgres_storage import private_metadata, migrate_postgres, verify_postgres, audit_connection
+        from database_diagnostics import DatabasePolicyError, database_stage
+        engine = self.isolated_engine()
+        metadata = private_metadata(Base.metadata)
+        try:
+            # Migration calls the real audit inside its transaction. Fresh app DDL
+            # supplies ordinary tables plus SERIAL sequences in this isolated DB.
+            migrate_postgres(engine, metadata)
+            self.assertFalse(verify_postgres(engine, metadata)['public_access'])
+            with database_stage('security_verification'), engine.connect() as connection:
+                with connection.begin():
+                    objects = connection.execute(text("SELECT c.relkind, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relkind IN ('r','S')"), {'schema': 'smartspend'}).all()
+                    self.assertTrue(any(kind == 'r' for kind, _ in objects))
+                    sequences = [name for kind, name in objects if kind == 'S']
+                    self.assertTrue(sequences, 'Isolated fixture must contain sequences')
+                    self.assertTrue(connection.execute(text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon')")).scalar(), 'Isolated fixture requires the anon API role')
+                    audit_connection(connection, metadata)  # Must not raise WrongObjectType.
+                    # Grant only within a savepoint, then restore permissions even
+                    # if the assertion/audit fails. No production role is created.
+                    savepoint = connection.begin_nested()
+                    try:
+                        identifier = connection.dialect.identifier_preparer.quote(sequences[0])
+                        connection.execute(text(f'GRANT USAGE ON SEQUENCE smartspend.{identifier} TO anon'))
+                        with self.assertRaises(DatabasePolicyError) as caught:
+                            audit_connection(connection, metadata)
+                        self.assertEqual(caught.exception.code, 'sequence_privileges')
+                    finally:
+                        savepoint.rollback()
+                    self.assertFalse(audit_connection(connection, metadata)['public_access'])
+            self.assertFalse(verify_postgres(engine, metadata)['public_access'])
         finally:
             engine.dispose()
 
