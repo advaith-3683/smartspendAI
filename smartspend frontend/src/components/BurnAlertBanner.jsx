@@ -11,29 +11,14 @@ function buildAlert(p) {
     return {
       category,
       severity: 'bad',
-      message: `You've already gone ₹${overBy.toLocaleString('en-IN', { maximumFractionDigits: 0 })} over your ${category} budget with ${days_in_month - days_elapsed} days still left this month.`,
-    }
-  }
-
-  // Not overspent yet, but projected to run out before month-end
-  const dailyRate = spent_so_far / days_elapsed
-  const remaining = monthly_limit - spent_so_far
-  if (dailyRate > 0 && remaining > 0) {
-    const daysUntilExhausted = remaining / dailyRate
-    const exhaustionDay = Math.ceil(days_elapsed + daysUntilExhausted)
-    if (exhaustionDay <= days_in_month) {
-      return {
-        category,
-        severity: status === 'over_budget' ? 'bad' : 'warn',
-        message: `Based on your current spending velocity, you'll run out of your ${category} budget by day ${exhaustionDay} of this month.`,
-      }
+      message: `You've already gone ₹${overBy.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} over your ${category} budget with ${days_in_month - days_elapsed} days still left this month.`,
     }
   }
 
   return {
     category,
     severity: 'warn',
-    message: `Your ${category} spending is pacing above budget — keep an eye on it for the rest of the month.`,
+    message: `Your ${category} spending is projected at INR ${p.projected_spend.toLocaleString('en-IN', { maximumFractionDigits: 2 })} against a budget of INR ${monthly_limit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Monthly and one-time payments are counted once.`,
   }
 }
 
@@ -55,7 +40,7 @@ export default function BurnAlertBanner({ pace }) {
             color: a.severity === 'bad' ? 'var(--status-bad)' : 'var(--status-warn)',
           }}
         >
-          <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, letterSpacing: '0.06em', flexShrink: 0, marginTop: 2 }}>
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 14, letterSpacing: '0.06em', flexShrink: 0, marginTop: 2 }}>
             ⏱ PACE
           </span>
           <span>{a.message}</span>

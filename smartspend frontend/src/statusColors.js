@@ -1,9 +1,8 @@
 export const STATUS_COLORS = {
-  on_track: { solid: '#34E5C7', bright: '#7FFFE0', glow: 'rgba(52, 229, 199, 0.45)' },
-  at_risk: { solid: '#FFC857', bright: '#FFE29A', glow: 'rgba(255, 200, 87, 0.45)' },
-  over_budget: { solid: '#FF5C7A', bright: '#FF9BAF', glow: 'rgba(255, 92, 122, 0.5)' },
+  on_track: { solid: '#91dfbb', bright: '#b4ebd1', glow: 'transparent' },
+  at_risk: { solid: '#f0ce8d', bright: '#f6dfb2', glow: 'transparent' },
+  over_budget: { solid: '#ffb6ad', bright: '#ffd1cb', glow: 'transparent' },
 }
-
 export function getStatusColors(status) {
   return STATUS_COLORS[status] || STATUS_COLORS.on_track
 }

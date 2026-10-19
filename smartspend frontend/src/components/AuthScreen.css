@@ -1,0 +1,49 @@
+/* Production adaptation of the approved full-screen /design-preview/a/ composition. */
+.auth-page { width: 100%; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr; padding: 24px clamp(48px, 3.33vw, 64px); background: var(--canvas); }
+.auth-masthead { display: flex; align-items: center; padding-bottom: 18px; }
+.auth-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(480px, 560px); gap: 64px; align-items: center; padding: 18px 0; min-width: 0; }
+.auth-page .introduction { min-width: 0; }
+.auth-page .eyebrow { display: block; margin-bottom: 20px; color: var(--accent); font-size: 14px; letter-spacing: .12em; font-weight: 600; text-transform: uppercase; }
+.auth-page .introduction :is(h1,h2) { font-size: clamp(56px, 5vw, 80px); font-weight: 650; letter-spacing: -.055em; line-height: 1.08; margin-bottom: 24px; }
+.auth-page .introduction :is(h1,h2) > span { color: var(--accent); text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 12px; }
+.auth-page .introduction p { max-width: 650px; font-size: 20px; color: var(--muted); line-height: 1.75; margin-bottom: 0; }
+.auth-page .finance-motif { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 40px; padding-top: 23px; border-top: 1px solid #465057; }
+.auth-page .finance-motif > div { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; font-size: 17px; }
+.auth-page .finance-motif span { color: var(--accent); font-size: 14px; }
+.auth-page .finance-motif strong { font-weight: 500; line-height: 1.5; }
+.auth-page .finance-motif svg { width: 22px; height: 22px; color: #a0b471; }
+.auth-form-panel { width: 100%; min-width: 0; padding: 26px 28px; border: 1px solid #41484e; border-radius: 18px; background: var(--surface-raised); }
+.auth-form-wrap { width: 100%; }
+.auth-form-heading h1 { font-size: 40px; line-height: 1.2; margin: 8px 0 10px; font-weight: 650; }
+.auth-form-heading > p { color: var(--muted); font-size: 18px; margin: 0 0 24px; line-height: 1.65; }
+.auth-form-panel form { display: grid; gap: 17px; }
+.auth-form-panel label { font-size: 18px; margin-bottom: 8px; }
+.auth-form-panel input { min-height: 56px; padding: 13px 15px; font-size: 18px; }
+.password-field { display: flex; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--field); }
+.password-field input { flex: 1; width: 0; border: 0; background: transparent; }
+.password-field:focus-within { border-color: var(--accent); }
+.password-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 54px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 16px; }
+.auth-submit { width: 100%; min-height: 56px; font-size: 18px; margin-top: 3px; }
+.auth-switch { color: var(--muted); font-size: 16px; text-align: center; margin: 14px 0 0; }
+.auth-form-panel .form-alert, .auth-form-panel .connection-alert { margin: 0 0 16px; }
+.auth-form-panel form .form-alert { margin: 0; }
+@media (max-width: 1100px) {
+  .auth-page { padding: 24px 32px; }
+  .auth-grid { grid-template-columns: minmax(0, 1fr); gap: 30px; }
+  .auth-form-panel { max-width: 560px; justify-self: center; }
+  .auth-page .introduction :is(h1,h2) { font-size: clamp(42px, 6vw, 64px); }
+  .auth-page .finance-motif { margin-top: 26px; }
+}
+@media (max-width: 600px) {
+  .auth-page { padding: 22px 18px; }
+  .auth-page .brand { font-size: 28px; }
+  .auth-page .brand-symbol { width: 42px; height: 42px; }
+  .auth-page .introduction :is(h1,h2) { font-size: clamp(36px, 9vw, 50px); }
+  .auth-page .introduction p { font-size: 18px; }
+  .auth-page .finance-motif { grid-template-columns: 1fr; gap: 14px; }
+  .auth-page .finance-motif > div { flex-direction: row; align-items: center; font-size: 16px; }
+  .auth-page .finance-motif svg { margin-left: auto; flex-shrink: 0; }
+  .auth-form-panel { padding: 24px 18px; }
+  .auth-form-heading h1 { font-size: 32px; }
+  .auth-form-panel label, .auth-form-panel input, .auth-submit { font-size: 17px; }
+}

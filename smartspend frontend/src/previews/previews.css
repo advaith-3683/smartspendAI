@@ -1,0 +1,149 @@
+/* Standalone, full-screen local previews. Never imported by the working app. */
+* { box-sizing: border-box; }
+html { font-size: 16px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body, #preview-root { width: 100%; min-height: 100%; margin: 0; }
+body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 18px; line-height: 1.6; }
+button, input { font: inherit; }
+button, a { touch-action: manipulation; }
+button { cursor: pointer; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+.preview-root { --accent: #d5f66d; --ink: #f4f5ef; --muted: #adb4b8; --line: #3a4045; --field: #25292d; width: 100%; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; background: #151719; color: var(--ink); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.skip { position: absolute; left: 16px; top: -100px; z-index: 10; padding: 12px; background: var(--accent); color: #121812; border-radius: 7px; }
+.skip:focus { top: 12px; }
+.comparison-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 10px clamp(48px, 3.33vw, 64px); border-bottom: 1px solid var(--line); }
+.comparison-bar > div { display: flex; align-items: center; gap: 16px; }
+.comparison-bar > div > strong { font-size: 14px; letter-spacing: .08em; }
+.comparison-bar > div > span { color: var(--muted); font-size: 14px; }
+.comparison-bar nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.comparison-bar a { display: flex; align-items: center; gap: 8px; padding: 7px 12px; min-height: 40px; border-radius: 7px; border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-size: 14px; }
+.comparison-bar a b { font-size: 16px; }
+.comparison-bar a[aria-current] { color: var(--ink); border-color: var(--accent); }
+.design-stage { display: grid; width: 100%; min-width: 0; padding: 32px clamp(48px, 3.33vw, 64px); }
+.design-stage h1, .design-stage h2, .design-stage p { margin-top: 0; }
+.graphite-frame, .violet-frame, .gold-frame { display: grid; grid-template-rows: auto 1fr; width: 100%; min-width: 0; max-width: none; }
+.design-masthead, .gold-brand { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-bottom: 24px; }
+.brand { display: flex; align-items: center; gap: 13px; font-size: 32px; font-weight: 700; letter-spacing: -.045em; }
+.brand-symbol { display: grid; place-items: center; width: 48px; height: 48px; background: var(--accent); color: #1c2512; border-radius: 11px; }
+.brand-symbol svg { width: 29px; height: 29px; }
+.ai-label { display: inline-block; margin-left: 7px; color: var(--accent); font-size: 16px; font-weight: 600; letter-spacing: 0; vertical-align: top; }
+.masthead-label { font-size: 14px; letter-spacing: .1em; color: var(--muted); }
+.eyebrow { display: block; color: var(--accent); font-size: 14px; text-transform: uppercase; letter-spacing: .12em; font-weight: 700; margin-bottom: 20px; }
+.introduction { min-width: 0; }
+.introduction h1 { font-size: clamp(56px, 5vw, 80px); font-weight: 800; letter-spacing: -.06em; line-height: 1.08; margin-bottom: 24px; }
+.introduction h1 > span { color: var(--accent); }
+.introduction p { color: var(--muted); font-size: 20px; line-height: 1.75; max-width: 650px; margin-bottom: 0; }
+.graphite-grid, .gold-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(480px, 560px); gap: 64px; align-items: center; padding: 28px 0; min-width: 0; }
+.login-section { min-width: 0; width: 100%; }
+.form-heading h2 { font-size: 42px; letter-spacing: -.04em; margin: 10px 0 12px; font-weight: 700; line-height: 1.2; }
+.form-heading > p { font-size: 19px; color: var(--muted); line-height: 1.65; margin-bottom: 30px; }
+.form-kicker { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; }
+.preview-form { display: grid; gap: 22px; }
+.preview-form label { display: grid; gap: 10px; font-size: 18px; font-weight: 600; }
+.preview-form input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px; background: var(--field); color: var(--ink); font-size: 18px; min-height: 58px; line-height: 1.5; }
+.password-wrap { display: flex; min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--field); }
+.password-wrap input { border: 0; flex: 1; width: 0; background: transparent; }
+.visibility { min-height: 56px; background: transparent; color: var(--muted); font-size: 16px; border: 0; border-radius: 8px; padding: 0 16px; }
+.submit { display: flex; justify-content: space-between; align-items: center; min-height: 58px; border: 0; border-radius: 9px; padding: 15px 18px; background: var(--accent); color: #1c2512; font-size: 18px; font-weight: 700; margin-top: 6px; }
+.submit:hover { filter: brightness(1.07); }
+.submit svg { width: 23px; height: 23px; }
+.signup-prompt { font-size: 17px; color: var(--muted); text-align: center; margin: 18px 0 14px; }
+.signup-prompt button { display: inline; padding: 8px 2px; background: transparent; border: 0; color: var(--accent); font-size: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
+.preview-note { font-size: 14px; color: var(--muted); line-height: 1.7; text-align: center; margin: 0; }
+.preview-feedback { font-size: 16px; line-height: 1.7; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 18px 0 0; }
+.comparison-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 14px; padding: 12px clamp(48px, 3.33vw, 64px) 22px; line-height: 1.6; }
+/* A: full-width graphite typography and horizontal capability rail. */
+.graphite-grid .login-section { padding: 28px; background: #23272c; border: 1px solid #41484e; border-radius: 18px; }
+.graphite-grid .introduction h1 > span { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 12px; }
+.graphite-grid .finance-motif { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 48px; border-top: 1px solid #465057; padding-top: 23px; }
+.graphite-grid .finance-motif > div { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; font-size: 17px; min-width: 0; }
+.graphite-grid .finance-motif span { color: var(--accent); font-size: 14px; }
+.graphite-grid .finance-motif strong { font-weight: 500; line-height: 1.5; }
+.graphite-grid .finance-motif svg { color: #a0b471; width: 22px; height: 22px; }
+/* B: form-first editorial composition; large offset violet placards. */
+.design-b { --accent: #6335be; --ink: #252033; --muted: #716980; --line: #e1dbe9; --field: #f7f5fa; background: #f5f3f9; }
+.design-b .brand-symbol { background: #6335be; color: white; border-radius: 14px; }
+.violet-frame .design-masthead { border-bottom: 1px solid #ddd5e8; }
+.violet-grid { display: grid; grid-template-columns: minmax(480px, 560px) minmax(0, 1fr); gap: 64px; align-items: center; padding: 36px 0 20px; }
+.violet-grid .form-heading h2 { font-size: 44px; font-weight: 750; }
+.violet-grid .preview-form input { background: white; box-shadow: 0 2px 3px #2f173008; }
+.violet-grid .password-wrap { background: white; box-shadow: 0 2px 3px #2f173008; }
+.violet-grid .password-wrap input { box-shadow: none; }
+.violet-grid .submit { color: white; box-shadow: 0 4px 9px #6335be22; }
+.violet-grid .signup-prompt, .violet-grid .preview-note { text-align: left; }
+.violet-editorial { border-left: 1px solid #d9cde9; padding-left: 40px; min-width: 0; }
+.violet-editorial .introduction h1 { font-weight: 700; }
+.violet-editorial .finance-motif { display: grid; gap: 14px; margin-top: 30px; }
+.violet-editorial .finance-motif > div { display: flex; align-items: center; gap: 18px; padding: 20px 22px; border-radius: 13px; border: 1px solid #dcd1ed; background: white; box-shadow: 0 5px 16px #492b6709; font-size: 18px; }
+.violet-editorial .finance-motif > div:nth-child(2) { margin-left: 24px; background: #eee5fa; }
+.violet-editorial .finance-motif > div:nth-child(3) { margin-left: 48px; }
+.violet-editorial .finance-motif span { color: #7e53ba; font-size: 14px; }
+.violet-editorial .finance-motif svg { margin-left: auto; color: #7e53ba; flex-shrink: 0; }
+/* C: full-width warm-dark editorial spread with restrained gold rules. */
+.design-c { --accent: #dfbc79; --ink: #f0e9dd; --muted: #b0a798; --line: #494237; --field: #211f1b; background: #171613; }
+.gold-frame { grid-template-rows: auto 1fr auto; }
+.gold-brand { border-bottom: 1px solid #3c362b; }
+.design-c .brand { font-weight: 550; letter-spacing: -.025em; }
+.design-c .brand-symbol { color: #dfbc79; border: 1px solid #756145; background: transparent; border-radius: 50%; }
+.gold-grid { padding-top: 40px; padding-bottom: 40px; }
+.gold-grid .introduction { border-left: 2px solid #907446; padding: 12px 0 12px 32px; }
+.gold-grid .introduction h1 { font-weight: 500; line-height: 1.16; letter-spacing: -.045em; }
+.gold-grid .eyebrow { letter-spacing: .18em; }
+.gold-form-frame { width: 100%; padding-left: 40px; border-left: 1px solid #625039; }
+.gold-form-frame .form-heading h2 { font-size: 40px; font-weight: 500; }
+.gold-form-frame .preview-form input, .gold-form-frame .password-wrap, .gold-form-frame .submit { border-radius: 4px; }
+.gold-form-frame .submit { color: #272014; font-weight: 650; }
+.gold-signature { color: #a99a80; font-size: 14px; letter-spacing: .18em; margin: 0; padding-top: 20px; border-top: 1px solid #3c362b; }
+.gold-signature span { padding: 0 18px; }
+.design-c .comparison-bar a[aria-current] { background: #2d271c; }
+@media (max-width: 1250px) {
+  .comparison-bar > div > span { display: none; }
+  .graphite-grid, .gold-grid, .violet-grid { gap: 40px; }
+  .violet-editorial { padding-left: 24px; }
+  .gold-form-frame { padding-left: 24px; }
+}
+@media (max-width: 1100px) {
+  .design-stage { padding: 28px 32px; }
+  .comparison-bar { padding: 10px 32px; }
+  .comparison-footer { padding-inline: 32px; }
+  .graphite-grid, .gold-grid, .violet-grid { grid-template-columns: minmax(0, 1fr); gap: 36px; }
+  .login-section, .gold-form-frame { max-width: 560px; justify-self: center; }
+  .introduction h1 { font-size: clamp(42px, 6vw, 64px); }
+  .graphite-grid .finance-motif { margin-top: 28px; }
+  .violet-editorial { border-left: 0; border-top: 1px solid #d9cde9; padding: 30px 0 0; }
+  .gold-form-frame { border-left: 0; border-top: 1px solid #625039; padding: 32px 0 0; }
+  .gold-grid .introduction { padding-left: 24px; }
+}
+@media (max-width: 600px) {
+  body { font-size: 16px; }
+  .comparison-bar { padding: 10px 20px; flex-wrap: nowrap; }
+  .comparison-bar > div > strong { font-size: 16px; letter-spacing: 0; }
+  .comparison-bar a { min-height: 44px; min-width: 44px; justify-content: center; padding: 6px; }
+  .comparison-bar a span { display: none; }
+  .comparison-bar a b { font-size: 16px; }
+  .design-stage { padding: 24px 20px; }
+  .comparison-footer { padding: 8px 20px 24px; font-size: 16px; }
+  .design-masthead, .gold-brand { flex-wrap: wrap; gap: 12px; padding-bottom: 22px; }
+  .masthead-label { font-size: 16px; letter-spacing: 0; }
+  .brand { font-size: 28px; }
+  .ai-label { font-size: 16px; }
+  .brand-symbol { width: 42px; height: 42px; }
+  .eyebrow, .form-kicker { font-size: 16px; letter-spacing: .06em; }
+  .introduction h1 { font-size: clamp(36px, 9vw, 50px); line-height: 1.12; }
+  .introduction p, .form-heading > p { font-size: 18px; }
+  .graphite-grid, .gold-grid, .violet-grid { padding: 10px 0; gap: 32px; }
+  .graphite-grid .login-section { padding: 22px 18px; }
+  .form-heading h2, .violet-grid .form-heading h2, .gold-form-frame .form-heading h2 { font-size: 34px; }
+  .preview-form label, .preview-form input, .submit, .signup-prompt { font-size: 18px; }
+  .visibility, .preview-note, .preview-feedback { font-size: 16px; }
+  .graphite-grid .finance-motif { grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 28px; }
+  .graphite-grid .finance-motif > div { flex-direction: row; align-items: center; font-size: 16px; }
+  .graphite-grid .finance-motif span { font-size: 16px; }
+  .graphite-grid .finance-motif svg { margin-left: auto; flex-shrink: 0; }
+  .violet-editorial .finance-motif > div { margin-left: 0; padding: 18px 14px; font-size: 16px; }
+  .violet-editorial .finance-motif span { font-size: 16px; }
+  .gold-grid .introduction { padding-left: 18px; }
+  .gold-signature { font-size: 16px; letter-spacing: .06em; padding-top: 20px; margin-top: 22px; }
+  .gold-signature span { padding: 0 7px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }

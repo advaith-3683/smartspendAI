@@ -17,13 +17,13 @@ export default function MonthNav({ year, month, onChange }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <button className="btn secondary" type="button" onClick={goPrev} aria-label="Previous month">
+      <button className="btn secondary" type="button" onClick={goPrev} disabled={year === 1900 && month === 1} aria-label="Previous month">
         ‹
       </button>
       <div className="month-label" style={{ minWidth: 130, textAlign: 'center' }}>
         {MONTH_NAMES[month - 1]} {year}
       </div>
-      <button className="btn secondary" type="button" onClick={goNext} aria-label="Next month">
+      <button className="btn secondary" type="button" onClick={goNext} disabled={year === 2200 && month === 12} aria-label="Next month">
         ›
       </button>
     </div>

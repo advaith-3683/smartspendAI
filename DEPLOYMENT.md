@@ -2,6 +2,44 @@
 
 No deployment, push, production connection or edit to a real `.env` was performed. These instructions supersede the earlier Neon/default-schema deployment notes.
 
+## Frontend configuration follow-up (19 October 2026; not deployed)
+
+### Diagnosed localhost connection failure
+
+The user confirmed the browser origin is **http://localhost:5173**. Vite's `loadEnv` resolves both development and production VITE_API_URL to `https://smartspend-backend-lsk5.onrender.com` in the current workspace; the process variable is unset. The frontend therefore targets Render, not the local FastAPI server. The real `.env` was inspected only for that public URL and was not edited.
+
+Read-only live probes with `Origin: http://localhost:5173` returned **401** for unauthenticated `GET /auth/me` in 1.70 seconds, with `Access-Control-Allow-Credentials: true` but **no Access-Control-Allow-Origin**. Its Content-Type preflight returned **400** with no allowed origin. The backend is reachable; the expected unauthenticated response is being withheld from this browser origin by CORS. Removing Content-Type on bodyless GET avoids an unnecessary preflight, but does not fix the missing origin grant. No evidence of cookie blocking was observed and no cookie-setting change is recommended as the fix for this incident.
+
+In the **existing Render service → Environment**, edit the existing CORS_ORIGINS value by appending this exact text (unless already present):
+
+```text
+,http://localhost:5173
+```
+
+The backend expects a single **comma-separated string**, without JSON brackets, extra quotes, a wildcard or trailing slash. The complete value should have this form; replace the first part with the actual existing value, preserving all its origins:
+
+```text
+CORS_ORIGINS=EXISTING_COMMA_SEPARATED_ORIGINS,http://localhost:5173
+```
+
+Do not literally paste EXISTING_COMMA_SEPARATED_ORIGINS. The live dashboard's current value is not accessible here, so an exact complete replacement cannot safely be invented. Keep `APP_ENV=production`, `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`, the current DATABASE_URL and other secrets unchanged. Apply/restart the existing backend under your release process; no dashboard change, restart or deployment was performed by this work. Then retry the login alert. A successful unauthenticated probe should return 401 **with** `Access-Control-Allow-Origin: http://localhost:5173` and credentials true; the login POST preflight should return 200. No frontend restart is needed for a Render-only environment change. Vite must restart if its local .env is changed.
+
+If you choose local development instead, use the isolated database setup in MANUAL_BROWSER_CHECKLIST.md and set the frontend process's VITE_API_URL to that local backend. For the current browser URL, set that isolated backend's process `CORS_ORIGINS=http://localhost:5173`, `APP_ENV=development`, `COOKIE_SECURE=false`, `COOKIE_SAMESITE=lax`. Restart both the local backend and Vite after changing process variables. Never start the local backend without explicitly overriding DATABASE_URL to the disposable database; the real backend .env may point at production. These development cookie settings must not be applied to Render. This pass keeps the existing frontend pointing at Render and does not silently switch databases or servers.
+
+The frontend continues to use **VITE_API_URL**. For the existing Vercel project set:
+
+```text
+VITE_API_URL=https://smartspend-backend-lsk5.onrender.com
+```
+
+Use Root Directory `smartspend frontend`, build `npm run build`, and output directory `dist`. Vite embeds this public origin at build time. Production without an override defaults to the same HTTPS Render origin; only Vite development defaults to localhost. `.env.example` contains no credentials. Do not copy backend `.env` into Vercel or add DATABASE_URL/GEMINI_API_KEY to any VITE variable. No dashboard settings or deployments were changed in this pass.
+
+For direct Vercel-to-Render cookie requests, the existing Render backend must have `APP_ENV=production`, `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`, and `CORS_ORIGINS=https://YOUR_ACTUAL_VERCEL_PRODUCTION_HOST`. Replace the placeholder with the precise deployed origin, without a path or trailing slash. Add individual trusted preview origins only when needed; do not use a wildcard origin. Existing middleware checks Origin on writes, and CORSMiddleware already allows credentialed GET/POST/PATCH/DELETE/OPTIONS requests. No backend source change is required for this configuration. The actual Vercel hostname and live dashboard settings were not provided/verified.
+
+Browsers may still block third-party cookies even with correct CORS and SameSite=None; test the actual frontend/API domains before release. SameSite=None requires Secure. See [MDN CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS) and [Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie). If blocked, use same-site custom frontend/API domains, or deliberately configure a same-origin proxy that preserves cookies and the frontend Origin; use `COOKIE_SAMESITE=lax` only once the resulting request is same-site. A proxy also needs its `/api` prefix stripped before reaching FastAPI. No rewrite or custom domain has been installed automatically.
+
+Before release, use MANUAL_BROWSER_CHECKLIST.md against an isolated backend, then check deployed Set-Cookie/CORS behavior with disposable release-test accounts under an explicit safe test workflow. Automated local tests manually maintain cookie jars; they do not emulate browser CORS, cookie privacy rules, microphone hardware or viewports. Keep the existing PostgreSQL TLS/RLS/migration setup below unchanged. Nothing here transfers SQLite records or changes database hosting.
+
 ## Target architecture
 
 ### Email authentication transition: schema 5 (not deployed)
@@ -156,6 +194,7 @@ python manage_database.py migrate && python manage_database.py verify && uvicorn
 ```
 
 The checked-in render.yaml already uses main:app. A Git push does not itself prove an existing dashboard command was updated. This diagnostics change does not disable TLS, remove the audit, reset tables or establish that the live Supabase connection has passed.
+
 
 ## Empty schema-4 deployment exception (local change; not pushed)
 

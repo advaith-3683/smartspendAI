@@ -1,3 +1,5 @@
+import Icon from './Icon.jsx'
+import { useConfirm } from './ConfirmDialog.jsx'
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
 
@@ -30,7 +32,15 @@ const SpeechRecognitionAPI =
 const SPEECH_SUPPORTED = !!SpeechRecognitionAPI
 const VOICE_OUTPUT_SUPPORTED = typeof window !== 'undefined' && !!window.speechSynthesis
 
-export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
+export default function CoachPanel({ userId, year, month, onExpenseLogged, active = true }) {
+  const confirm = useConfirm()
+  const sending = useRef(false)
+  const resolving = useRef(false)
+  const [retryHistory, setRetryHistory] = useState(0)
+  const [proposals, setProposals] = useState([])
+  const [proposalBusy, setProposalBusy] = useState('')
+  const [notice, setNotice] = useState('')
+
   const [messages, setMessages] = useState([GREETING])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -40,7 +50,6 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
   const [voiceOutput, setVoiceOutput] = useState(false)
   const scrollRef = useRef(null)
   const recognitionRef = useRef(null)
-  const sendRef = useRef(() => {})
   const voiceOutputRef = useRef(false)
   const transcriptRef = useRef('')
 
@@ -55,7 +64,8 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.rate = 1
     utterance.pitch = 1
-    window.speechSynthesis.speak(utterance)
+    utterance.onerror = () => setError('Voice playback unavailable. Read the reply in the conversation.')
+    try { window.speechSynthesis.speak(utterance) } catch { setError('Voice playback unavailable. Read the reply below.') }
   }
 
   useEffect(() => {
@@ -76,16 +86,16 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
       if (finalChunk) transcriptRef.current = (transcriptRef.current + ' ' + finalChunk).trim()
       setInput((transcriptRef.current + ' ' + interimChunk).trim())
     }
-    recognition.onerror = () => setListening(false)
+    recognition.onerror = event => { transcriptRef.current = ''; setListening(false); setError(event.error === 'not-allowed' ? 'Microphone access denied. Allow microphone access in browser settings, or type your message.' : 'Speech recognition failed. Check your microphone and connection, or type your message.') }
     recognition.onend = () => {
       setListening(false)
       const finalText = transcriptRef.current.trim()
       transcriptRef.current = ''
-      if (finalText) sendRef.current(finalText)
+      if (finalText) setInput(finalText)
     }
 
     recognitionRef.current = recognition
-    return () => recognition.stop()
+    return () => { recognition.onend = null; recognition.abort() }
   }, [])
 
   useEffect(() => {
@@ -95,16 +105,19 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
   }, [])
 
   useEffect(() => {
-    api
-      .getCoachHistory(userId)
-      .then((past) => {
-        if (past.length > 0) {
-          setMessages(past.map((m) => ({ role: m.role, content: m.content })))
-        }
+    let live = true
+    setHistoryLoaded(false)
+    setError('')
+    Promise.all([api.getCoachHistory(userId), api.getProposals(userId)])
+      .then(([past, drafts]) => {
+        if (!live) return
+        setMessages(past.length ? past.map(m => ({ role: m.role, content: m.content })) : [GREETING])
+        setProposals(drafts)
+        setHistoryLoaded(true)
       })
-      .catch(() => {}) // non-critical, fall back to fresh greeting
-      .finally(() => setHistoryLoaded(true))
-  }, [userId])
+      .catch(err => { if (live) setError(`Could not load your saved conversation: ${err.message}`) })
+    return () => { live = false }
+  }, [userId, retryHistory])
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -112,9 +125,21 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
     }
   }, [messages, loading])
 
+  useEffect(() => {
+    if (!active) {
+      transcriptRef.current = ''
+      recognitionRef.current?.abort()
+      setListening(false)
+      setVoiceOutput(false)
+      if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
+    }
+  }, [active])
+
   const send = async (text) => {
     const trimmed = text.trim()
-    if (!trimmed || loading) return
+    if (!trimmed || sending.current || !active || !historyLoaded) return
+    sending.current = true
+    transcriptRef.current = ''; recognitionRef.current?.abort(); setListening(false)
 
     setError('')
     setMessages((prev) => [...prev, { role: 'user', content: trimmed }])
@@ -124,20 +149,20 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
     try {
       const res = await api.coachChat(userId, trimmed, year, month)
       const logged = res.logged_expenses || []
+      setProposals(prev => [...prev, ...(res.proposed_expenses || [])])
       setMessages((prev) => [...prev, { role: 'model', content: res.reply, loggedExpenses: logged }])
       speak(res.reply)
       if (logged.length > 0 && onExpenseLogged) onExpenseLogged()
     } catch (err) {
       const message = err.message || 'Something went wrong. Please try again.'
+      setInput(trimmed)
+      setMessages(prev => prev.slice(0, -1))
       setError(message.length > MAX_ERROR_LENGTH ? message.slice(0, MAX_ERROR_LENGTH) + '…' : message)
     } finally {
+      sending.current = false
       setLoading(false)
     }
   }
-
-  useEffect(() => {
-    sendRef.current = send
-  })
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -145,15 +170,17 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
   }
 
   const handleReset = async () => {
-    if (loading) return
+    if (sending.current || !await confirm('Delete your saved Coco conversation? Pending expense proposals stay available.')) return
+    sending.current = true
+    setLoading(true)
+    setError('')
     try {
       await api.clearCoachHistory(userId)
-    } catch (err) {
-      // non-critical — clear locally regardless
-    }
-    if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
-    setMessages([GREETING])
-    setError('')
+      if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
+      setMessages([GREETING])
+      setNotice('Saved conversation deleted.')
+    } catch (err) { setError(err.message) }
+    finally { sending.current = false; setLoading(false) }
   }
 
   const toggleListening = () => {
@@ -165,7 +192,7 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
       transcriptRef.current = ''
       setInput('')
       setListening(true)
-      recognitionRef.current.start()
+      try { recognitionRef.current.start() } catch { setListening(false); setError('Could not start microphone. Try again or type your message.') }
     }
   }
 
@@ -178,7 +205,17 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
 
   return (
     <div className="card chat-card">
-      <div className="chat-window" ref={scrollRef}>
+      <div className="chat-panel-heading"><span className="section-icon"><Icon name="coach" /></span><div><h2>Coco</h2><p>Your saved conversation | {new Date(year, month - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</p></div><span className="ai-badge">AI money coach</span></div>
+      <p className="period-note">Your conversation is saved to your account. Coco proposes expenses for your review; only Save records spending.</p>
+      {proposals.length > 0 && <section className="expense-proposals" aria-label="Expenses awaiting review"><h3>Review before saving</h3>{proposals.map(p => <div className="proposal-row" key={p.id}><div><strong>INR {Number(p.amount).toFixed(2)} | {p.category}</strong><p>{p.date}{p.merchant ? ` | ${p.merchant}` : ''}{p.note ? ` | ${p.note}` : ''}</p></div>{['save', 'cancel'].map(action => <button key={action} type="button" className={`btn ${action === 'cancel' ? 'secondary' : ''}`} disabled={!!proposalBusy} onClick={async () => {
+        if (resolving.current) return
+        resolving.current = true
+        setProposalBusy(p.id); setError('')
+        try { await api.resolveProposal(p.id, action); setProposals(prev => prev.filter(row => row.id !== p.id)); setNotice(action === 'save' ? 'Expense saved to your ledger.' : 'Proposal cancelled. No expense recorded.'); if (action === 'save') onExpenseLogged?.() }
+        catch (err) { setError(err.message) } finally { resolving.current = false; setProposalBusy('') }
+      }}>{proposalBusy === p.id ? 'Please wait...' : action === 'save' ? 'Save expense' : 'Cancel'}</button>)}</div>)}</section>}
+      {notice && <p role="status" className="success-text">{notice}</p>}
+      <div className="chat-window" role="log" aria-relevant="additions" aria-live="polite" aria-label="Conversation" ref={scrollRef}>
         {historyLoaded &&
           messages.map((m, i) => (
             <div key={i} className={`chat-bubble ${m.role}`}>
@@ -189,10 +226,10 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
                     <span
                       key={j}
                       className="chip"
-                      style={{ fontSize: 11, padding: '2px 8px', opacity: 0.85 }}
+                      style={{ fontSize: 16, padding: '2px 8px', opacity: 0.85 }}
                       title={le.note || ''}
                     >
-                      ✓ Logged ₹{le.amount.toLocaleString('en-IN')} · {le.category}
+                      ✓ Logged ₹{le.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {le.category}
                       {le.merchant ? ` · ${le.merchant}` : ''}
                     </span>
                   ))}
@@ -210,8 +247,8 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
               key={p}
               type="button"
               className="chip"
-              onClick={() => send(p)}
-              disabled={loading}
+              onClick={() => setInput(p)}
+              disabled={loading || !historyLoaded}
             >
               {p}
             </button>
@@ -219,43 +256,52 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
         </div>
       )}
 
-      {error && <div className="buy-result warn" style={{ marginTop: 12 }}>{error}</div>}
+      {!historyLoaded && !error && <p role="status">Loading saved conversation...</p>}
+      {!SPEECH_SUPPORTED && <p className="period-note">Voice input is unavailable in this browser. Type your message or use a browser with speech recognition.</p>}
+      <p className="period-note">Review dictated text, then press Send.</p>
+      {error && <div role="alert" className="buy-result warn" style={{ marginTop: 12 }}>{error}{!historyLoaded && <button className="btn secondary" onClick={() => setRetryHistory(n => n + 1)}>Retry conversation</button>}</div>}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
         {VOICE_OUTPUT_SUPPORTED && (
           <button
             type="button"
             className="btn secondary"
-            style={{ padding: '4px 10px', fontSize: 11 }}
+            style={{ padding: '4px 10px', fontSize: 16 }}
+            aria-pressed={voiceOutput}
             onClick={() => setVoiceOutput((v) => !v)}
             title={voiceOutput ? 'Turn off Coco\'s voice replies' : 'Have Coco speak its replies aloud'}
           >
-            {voiceOutput ? '🔊 Voice on' : '🔈 Voice off'}
+            <Icon name="audio" />{voiceOutput ? 'Voice on' : 'Voice off'}
           </button>
         )}
       </div>
 
       <form className="chat-input-row" onSubmit={handleSubmit}>
-        <input
-          type="text"
+        <textarea
+          rows={2}
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) handleSubmit(event) }}
+          aria-label="Message Coco"
+          maxLength={4000}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder={listening ? 'Listening...' : 'Ask Coco about your budget...'}
-          disabled={loading}
+          disabled={loading || !historyLoaded}
         />
         {SPEECH_SUPPORTED && (
           <button
             type="button"
             className={`btn secondary chat-send${listening ? ' listening' : ''}`}
             onClick={toggleListening}
-            disabled={loading}
+            aria-pressed={listening}
+            disabled={loading || !historyLoaded}
+            aria-label={listening ? 'Stop listening' : 'Speak to Coco'}
             title={listening ? 'Stop listening' : 'Speak your question to Coco'}
-            style={listening ? { background: 'var(--gold, #d4af37)', color: '#111' } : undefined}
+            style={listening ? { background: 'var(--accent)', color: 'var(--on-accent)' } : undefined}
           >
-            {listening ? '● Stop' : '🎤'}
+            <Icon name="microphone" />{listening ? 'Stop' : 'Speak'}
           </button>
         )}
-        <button className="btn chat-send" type="submit" disabled={loading || !input.trim()}>
+        <button className="btn chat-send" type="submit" disabled={loading || !historyLoaded || !input.trim()}>
           {loading ? '...' : 'Send'}
         </button>
         {hasChatted && (
@@ -263,22 +309,23 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged }) {
             className="btn secondary chat-send"
             type="button"
             onClick={handleReset}
-            disabled={loading}
+            disabled={loading || !historyLoaded}
             title="Start a new conversation"
           >
             Reset
           </button>
         )}
       </form>
+      <p className="composer-hint">Enter to send | Shift + Enter for a new line <span>{input.length}/4000</span></p>
 
       {SPEECH_SUPPORTED && (
         <button
           type="button"
           className={`coco-fab${listening ? ' listening' : ''}`}
           onClick={handleCocoFabTap}
-          disabled={loading}
-          aria-label={listening ? 'Stop talking to Coco and send' : 'Talk to Coco'}
-          title={listening ? 'Tap to stop and send' : 'Tap to talk to Coco'}
+          disabled={loading || !historyLoaded}
+          aria-label={listening ? 'Stop dictation and review' : 'Talk to Coco'}
+          title={listening ? 'Tap to stop and review' : 'Tap to talk to Coco'}
         >
           <span className="coco-fab-ring" aria-hidden="true" />
           {listening ? (

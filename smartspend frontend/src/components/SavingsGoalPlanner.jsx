@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { api } from '../api.js'
 
 function CategoryBar({ cat, maxValue }) {
@@ -8,14 +8,14 @@ function CategoryBar({ cat, maxValue }) {
 
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 4 }}>
         <span style={{ color: 'var(--ink)' }}>{cat.category}</span>
-        <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: 'var(--ink-soft)' }}>
-          ₹{cat.current_monthly_avg.toLocaleString('en-IN')}
+        <span style={{ fontFamily: 'var(--font-body)', color: 'var(--ink-soft)' }}>
+          ₹{cat.current_monthly_avg.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           {hasCut && (
             <>
               {' → '}
-              <span style={{ color: 'var(--gold)' }}>₹{cat.target_monthly.toLocaleString('en-IN')}</span>
+              <span style={{ color: 'var(--gold)' }}>₹{cat.target_monthly.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </>
           )}
         </span>
@@ -40,8 +40,8 @@ function CategoryBar({ cat, maxValue }) {
         />
       </div>
       {hasCut && (
-        <div style={{ fontSize: 11, color: 'var(--gold)', marginTop: 2 }}>
-          Cut ₹{cat.cut_amount.toLocaleString('en-IN')} ({cat.cut_percent}%)
+        <div style={{ fontSize: 14, color: 'var(--gold)', marginTop: 2 }}>
+          Cut ₹{cat.cut_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({cat.cut_percent}%)
         </div>
       )}
     </div>
@@ -49,6 +49,7 @@ function CategoryBar({ cat, maxValue }) {
 }
 
 export default function SavingsGoalPlanner({ userId }) {
+  const busy = useRef(false)
   const [amount, setAmount] = useState('')
   const [months, setMonths] = useState('')
   const [plan, setPlan] = useState(null)
@@ -57,6 +58,7 @@ export default function SavingsGoalPlanner({ userId }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (busy.current) return
     setError('')
     const amt = parseFloat(amount)
     const mo = parseInt(months, 10)
@@ -64,6 +66,7 @@ export default function SavingsGoalPlanner({ userId }) {
       setError('Enter a valid savings amount and number of months.')
       return
     }
+    busy.current = true
     setLoading(true)
     setPlan(null)
     try {
@@ -72,6 +75,7 @@ export default function SavingsGoalPlanner({ userId }) {
     } catch (err) {
       setError(err.message || 'Could not calculate a plan right now.')
     } finally {
+      busy.current = false
       setLoading(false)
     }
   }
@@ -86,7 +90,8 @@ export default function SavingsGoalPlanner({ userId }) {
             <label htmlFor="goal-amount">Savings goal (₹)</label>
             <input
               id="goal-amount"
-              type="number"
+              min="0.01" step="0.01" max="1000000000"
+              type="number" required
               placeholder="50000"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
@@ -95,8 +100,8 @@ export default function SavingsGoalPlanner({ userId }) {
           <div className="field">
             <label htmlFor="goal-months">In how many months</label>
             <input
-              id="goal-months"
-              type="number"
+              id="goal-months" max="600"
+              type="number" required
               min="1"
               placeholder="6"
               value={months}
@@ -107,7 +112,7 @@ export default function SavingsGoalPlanner({ userId }) {
             {loading ? 'Calculating...' : 'Build my plan'}
           </button>
         </div>
-        {error && <div className="error-text">{error}</div>}
+        {error && <div role="alert" className="error-text">{error}</div>}
       </form>
 
       {plan && (
@@ -117,13 +122,14 @@ export default function SavingsGoalPlanner({ userId }) {
             style={{ marginBottom: 20 }}
           >
             {plan.advice}
+            <p>{plan.baseline_note}</p>
           </div>
 
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 20, fontSize: 12, color: 'var(--ink-soft)' }}>
-            <div>Need to save <strong style={{ color: 'var(--ink)' }}>₹{plan.monthly_savings_needed.toLocaleString('en-IN')}</strong>/mo</div>
-            <div>Currently saving <strong style={{ color: 'var(--ink)' }}>₹{plan.current_monthly_savings.toLocaleString('en-IN')}</strong>/mo</div>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 20, fontSize: 14, color: 'var(--ink-soft)' }}>
+            <div>Need to save <strong style={{ color: 'var(--ink)' }}>₹{plan.monthly_savings_needed.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>/mo</div>
+            <div>Currently saving <strong style={{ color: 'var(--ink)' }}>₹{plan.current_monthly_savings.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>/mo</div>
             {plan.additional_cut_needed > 0 && (
-              <div>Extra cut needed <strong style={{ color: 'var(--gold)' }}>₹{plan.additional_cut_needed.toLocaleString('en-IN')}</strong>/mo</div>
+              <div>Extra cut needed <strong style={{ color: 'var(--gold)' }}>₹{plan.additional_cut_needed.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>/mo</div>
             )}
           </div>
 

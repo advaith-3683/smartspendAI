@@ -1,32 +1,39 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { api } from '../api.js'
 
-export default function BuyDecision({ userId, categories }) {
+export default function BuyDecision({ userId, categories, year, month }) {
+  const revision = useRef(0)
+  const busy = useRef(false)
+  const [pending, setPending] = useState(false)
   const [itemName, setItemName] = useState('')
   const [cost, setCost] = useState('')
   const [category, setCategory] = useState('')
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  useEffect(() => { revision.current += 1; setResult(null); setError('') }, [year, month])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (busy.current) return
     setError('')
     setResult(null)
     if (!cost || !category) {
       setError('Pick a category and enter a cost.')
       return
     }
+    const version = revision.current
+    busy.current = true; setPending(true)
     try {
       const res = await api.buyDecision({
-        user_id: userId,
+        user_id: userId, year, month,
         category,
         item_name: itemName.trim() || 'this item',
         item_cost: parseFloat(cost),
       })
-      setResult(res)
+      if (version === revision.current) setResult(res)
     } catch (err) {
-      setError(err.message)
-    }
+      if (version === revision.current) setError(err.message)
+    } finally { busy.current = false; setPending(false) }
   }
 
   const handleClear = () => {
@@ -44,7 +51,7 @@ export default function BuyDecision({ userId, categories }) {
           <div className="field">
             <label htmlFor="buy-item">Item</label>
             <input
-              id="buy-item"
+              id="buy-item" maxLength={100}
               type="text"
               placeholder="New shoes"
               value={itemName}
@@ -53,28 +60,25 @@ export default function BuyDecision({ userId, categories }) {
           </div>
           <div className="field">
             <label htmlFor="buy-category">Category</label>
-            <select id="buy-category" value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="">Select...</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <input id="buy-category" list="buy-categories" required maxLength={100} value={category} onChange={e => setCategory(e.target.value)} />
+            <datalist id="buy-categories">{categories.map(c => <option key={c} value={c} />)}</datalist>
           </div>
           <div className="field">
             <label htmlFor="buy-cost">Cost (₹)</label>
             <input
               id="buy-cost"
-              type="number"
+              min="0.01" step="0.01" max="1000000000"
+              type="number" required
               placeholder="4000"
               value={cost}
               onChange={(e) => setCost(e.target.value)}
             />
           </div>
-          <button className="btn" type="submit">Check impact</button>
+          <button className="btn" type="submit" disabled={pending}>Check impact</button>
           <button className="btn secondary" type="button" onClick={handleClear}>Clear</button>
         </div>
       </form>
-      {error && <div className="error-text">{error}</div>}
+      {error && <div role="alert" className="error-text">{error}</div>}
       {result && (
         <div className={`buy-result ${result.would_exceed_budget ? 'warn' : 'ok'}`}>
           {result.message}

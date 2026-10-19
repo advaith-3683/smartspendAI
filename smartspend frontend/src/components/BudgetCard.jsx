@@ -1,53 +1,13 @@
 import React from 'react'
-import BurnGauge from './BurnGauge.jsx'
-import { getCategoryIcon, getCategoryTint } from '../categoryIcons.jsx'
-import { getStatusColors } from '../statusColors.js'
-
-const STATUS_LABEL = {
-  on_track: 'On track',
-  at_risk: 'At risk',
-  over_budget: 'Over budget',
-}
-
+import { formatMoney as money } from '../money.js'
+import { getCategoryIcon } from '../categoryIcons.jsx'
+const labels = { on_track: 'On track', at_risk: 'At risk', over_budget: 'Over budget' }
 export default function BudgetCard({ pace }) {
-  const Icon = getCategoryIcon(pace.category)
-  const tint = getCategoryTint(pace.category)
-  const colors = getStatusColors(pace.status)
-
-  return (
-    <div className="card budget-card" style={{ '--card-glow': colors.glow }}>
-      <div className="card-corner corner-tl" style={{ '--corner-color': colors.solid }} />
-      <div className="card-corner corner-br" style={{ '--corner-color': colors.solid }} />
-
-      <div className="category-name">{pace.category}</div>
-      <div className="gauge-stack">
-        <BurnGauge percent={pace.percent_of_budget_projected} status={pace.status} />
-        <div
-          className="gauge-icon-badge"
-          style={{
-            background: `linear-gradient(145deg, ${tint}33, ${tint}11)`,
-            color: tint,
-            boxShadow: `0 0 16px -2px ${tint}88, inset 0 0 0 1px ${tint}55`,
-          }}
-        >
-          <Icon />
-        </div>
-      </div>
-      <div className="gauge-percent" style={{ textShadow: `0 0 18px ${colors.glow}` }}>
-        {Math.round(pace.percent_of_budget_projected)}%
-      </div>
-      <div className="gauge-percent-label">Projected</div>
-      <span className={`status-pill ${pace.status}`}>{STATUS_LABEL[pace.status]}</span>
-      <div className="figures">
-        <div>
-          <span className="spent">₹{pace.spent_so_far.toLocaleString('en-IN')}</span> / ₹
-          {pace.monthly_limit.toLocaleString('en-IN')}
-        </div>
-        <div>
-          Day {pace.days_elapsed} of {pace.days_in_month} · projected ₹
-          {pace.projected_spend.toLocaleString('en-IN')}
-        </div>
-      </div>
-    </div>
-  )
+  const CategoryIcon = getCategoryIcon(pace.category)
+  return <article className="card budget-card">
+    <div className="budget-card-heading"><span className="section-icon"><CategoryIcon width="22" height="22" /></span><strong>{pace.category}</strong><span className={`status-pill ${pace.status}`}>{labels[pace.status]}</span></div>
+    <div className="budget-amount">INR {money(pace.spent_so_far)}</div><p className="budget-limit">spent of INR {money(pace.monthly_limit)}</p>
+    <progress value={Math.min(pace.spent_so_far, pace.monthly_limit)} max={pace.monthly_limit} aria-label={`${pace.category}: INR ${money(pace.spent_so_far)} spent of INR ${money(pace.monthly_limit)}`} />
+    <div className="budget-projection"><span>Projected spending</span><strong>INR {money(pace.projected_spend)}</strong></div><p className="period-note">{Math.round(pace.percent_of_budget_projected)}% of budget projected ? Day {pace.days_elapsed} of {pace.days_in_month}</p>
+  </article>
 }
