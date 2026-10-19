@@ -41,7 +41,7 @@ class Regressions(unittest.TestCase):
                 return error.code, json.load(error), error.headers
     def signup(self, username):
         client = self.client()
-        status, body, headers = self.call(client, '/auth/signup', {'username': username, 'password': 'long-test-password', 'name': ' Test ', 'monthly_income': 50000})
+        status, body, headers = self.call(client, '/auth/signup', {'email': username + '@example.com', 'password': 'long-test-password', 'name': ' Test ', 'monthly_income': 50000})
         self.assertEqual(status, 200, body); self.assertIn('HttpOnly', headers.get('Set-Cookie'))
         return client, body['id']
     def test_auth_ownership_logout_legacy(self):
@@ -58,7 +58,7 @@ class Regressions(unittest.TestCase):
         self.assertEqual(self.call(a, '/auth/me')[0], 200)
         self.assertEqual(self.call(a, '/auth/logout', {}, 'POST')[0], 200)
         self.assertEqual(self.call(a, '/auth/me')[0], 401)
-        self.assertEqual(self.call(a, '/auth/login', {'username': 'alice', 'password': 'long-test-password'})[0], 200)
+        self.assertEqual(self.call(a, '/auth/login', {'email': 'alice@example.com', 'password': 'long-test-password'})[0], 200)
         self.assertEqual(self.call(a, '/admin/reset-database', {}, 'POST')[0], 404)
         with SessionLocal() as db:
             legacy = models.User(name='legacy', monthly_income=123); db.add(legacy); db.commit(); legacy_id = legacy.id
@@ -69,7 +69,7 @@ class Regressions(unittest.TestCase):
         with SessionLocal() as db:
             db.query(auth.AuthSession).filter_by(user_id=uid).update({'expires_at': datetime(2000, 1, 1)}); db.commit()
         self.assertEqual(self.call(client, '/auth/me')[0], 401)
-        for _ in range(11): result = self.call(client, '/auth/login', {'username': 'missing', 'password': 'long-test-password'})
+        for _ in range(11): result = self.call(client, '/auth/login', {'email': 'missing@example.com', 'password': 'long-test-password'})
         self.assertEqual(result[0], 429); self.assertIn('Retry-After', result[2])
     def test_validation(self):
         for value in (-1, 0, 'NaN', 'Infinity', '1.001', 1000000001):
@@ -200,7 +200,7 @@ class Regressions(unittest.TestCase):
         self.call(client, '/auth/logout', {}, 'POST')
         # A separate cookie jar models a different browser/device.
         fresh = self.client()
-        self.assertEqual(self.call(fresh, '/auth/login', {'username': 'persistent', 'password': 'long-test-password'})[0], 200)
+        self.assertEqual(self.call(fresh, '/auth/login', {'email': 'persistent@example.com', 'password': 'long-test-password'})[0], 200)
         self.assertEqual(self.call(fresh, '/auth/me')[1]['id'], uid)
         self.assertEqual(self.call(fresh, f'/transactions/{uid}?year=2026&month=10')[1][0]['amount'], 12.34)
         self.assertEqual(self.call(fresh, f'/budgets/{uid}?year=2026&month=10')[1][0]['monthly_limit'], 500)
@@ -225,7 +225,7 @@ class Regressions(unittest.TestCase):
         proposal = response['proposed_expenses'][0]
         self.assertEqual(self.call(client, f'/transactions/{uid}')[1], [])
         self.call(client, '/auth/logout', {}, 'POST')
-        browser = self.client(); self.call(browser, '/auth/login', {'username': 'proposals', 'password': 'long-test-password'})
+        browser = self.client(); self.call(browser, '/auth/login', {'email': 'proposals@example.com', 'password': 'long-test-password'})
         self.assertEqual(self.call(browser, f'/coach/proposals/{uid}')[1][0]['id'], proposal['id'])
         other, _ = self.signup('proposal-other')
         self.assertEqual(self.call(other, f"/coach/proposals/{proposal['id']}/save", {}, 'POST')[0], 404)
@@ -253,7 +253,7 @@ class Regressions(unittest.TestCase):
             self.assertEqual(self.call(client, '/auth/me')[1]['id'], uid)
             self.assertEqual(len(self.call(client, f'/transactions/{uid}')[1]), 1)
             new_browser = self.client()
-            self.assertEqual(self.call(new_browser, '/auth/login', {'username': 'restart', 'password': 'long-test-password'})[0], 200)
+            self.assertEqual(self.call(new_browser, '/auth/login', {'email': 'restart@example.com', 'password': 'long-test-password'})[0], 200)
             self.assertEqual(self.call(new_browser, '/transactions', {'user_id': uid, 'category': 'Travel', 'amount': 5, 'date': '2026-10-02'})[0], 200)
         finally:
             self.base = old_base; process.terminate(); process.wait(timeout=10)
@@ -293,7 +293,7 @@ class Regressions(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool: list(pool.map(run, range(2)))
         with closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT monthly_income FROM users').fetchone()[0], 1234)
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 5)
         self.assertEqual(len(list(path.parent.glob(path.name + '.backup-*'))), 1)
     def test_failed_migration_rolls_back_money_conversion(self):
         from sqlalchemy import create_engine

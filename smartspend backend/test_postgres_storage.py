@@ -86,7 +86,7 @@ class PostgresOfflineTests(unittest.TestCase):
             result = MagicMock(); result.scalar.return_value = value
             return result
         roles = MagicMock(); roles.scalars.return_value.all.return_value = ['anon']
-        version = MagicMock(); version.scalars.return_value.all.return_value = [4]
+        version = MagicMock(); version.scalars.return_value.all.return_value = [5]
         connection.execute.side_effect = [catalog, scalar(False), scalar(0), roles,
                                           scalar(False), scalar(False), scalar(False), version]
         self.assertFalse(audit_connection(connection, metadata)['public_access'])

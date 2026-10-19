@@ -67,6 +67,38 @@ class RealPostgresTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+    def test_email_constraints_and_preserved_user_values(self):
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+        from database import Base
+        import models, auth, uuid
+        from postgres_storage import private_metadata, migrate_postgres, verify_postgres
+        engine = self.isolated_engine()
+        try:
+            migrate_postgres(engine, Base.metadata)
+            tables = private_metadata(Base.metadata).tables
+            users, emails = tables['smartspend.users'], tables['smartspend.email_accounts']
+            # All fixture writes roll back, including the duplicate constraint probes.
+            with engine.connect() as connection:
+                transaction = connection.begin()
+                try:
+                    ids = [connection.execute(users.insert().values(name='same name', monthly_income=12345).returning(users.c.id)).scalar_one() for _ in range(2)]
+                    email = uuid.uuid4().hex + '+tag@example.com'
+                    connection.execute(emails.insert().values(user_id=ids[0], email=email, password_hash='synthetic-only'))
+                    for candidate in (email, email.upper()):
+                        savepoint = connection.begin_nested()
+                        try:
+                            with self.assertRaises(IntegrityError):
+                                connection.execute(emails.insert().values(user_id=ids[1], email=candidate, password_hash='synthetic-only'))
+                        finally:
+                            savepoint.rollback()
+                    self.assertEqual(connection.execute(users.select().with_only_columns(users.c.monthly_income).where(users.c.id == ids[0])).scalar_one(), 12345)
+                    self.assertFalse(verify_postgres(engine, Base.metadata)['public_access'])
+                finally:
+                    transaction.rollback()
+        finally:
+            engine.dispose()
+
     def test_mixed_relations_and_forbidden_sequence_privileges(self):
         from sqlalchemy import text
         from database import Base

@@ -17,10 +17,10 @@ def migrate(engine, metadata):
         connection = connection.execution_options(schema_translate_map={"smartspend": None})
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         version = connection.exec_driver_sql("PRAGMA user_version").scalar()
-        if version > 4:
+        if version > 5:
             raise RuntimeError("Database schema is newer than this application")
         existing = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'")}
-        if version < 4 and existing:
+        if version < 5 and existing:
             backup = path.with_name(path.name + ".backup-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
             # A reserved write lock still permits this independent read backup.
             with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(backup)) as target:
@@ -37,4 +37,4 @@ def migrate(engine, metadata):
                         cents = int((money * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
                         connection.exec_driver_sql(f"UPDATE {table} SET {column}=? WHERE id=?", (cents, row_id))
         metadata.create_all(connection)
-        connection.exec_driver_sql("PRAGMA user_version = 4")
+        connection.exec_driver_sql("PRAGMA user_version = 5")

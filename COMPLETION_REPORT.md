@@ -188,3 +188,49 @@ python -m unittest -v test_postgres_integration.RealPostgresTests.test_mixed_rel
 ```
 
 Production and the existing financial database were not contacted or changed. POSTGRES_BACKUP_CONFIRMED was not set. Raw exceptions/secrets were not printed. Unrelated frontend edits were left untouched. The follow-up commit scope is limited to this audit fix, its regression tests and this report. No deployment is part of the Git commit/push operation.
+
+## Email authentication implementation ? 19 October 2026
+
+This section supersedes earlier username-based signup instructions. No commit, push, deploy, production connection/data write, real .env edit, or CORS/cookie/API URL change was performed. Existing unrelated Graphite/Lime frontend work was preserved.
+
+### Changes by screen and contract
+
+- Login: email/password by default, native email field, email autocomplete, trimmed input, existing validation/loading/retry/password visibility/session restoration. A separate older-account toggle uses the original account ID/password only for accounts without email enrollment. Approved layout, tokens and responsive styles remain unchanged.
+- Signup: Name, Email, Password and optional monthly income (empty/omitted becomes zero). Display names need not be unique. No username or fabricated credential is created for new users.
+- Account: email display and an explicit ownership-not-verified statement; username-only users can enroll an email using their active session and current password. Success refreshes the user in place. Errors remain visible; incorrect current passwords do not end the session. No email editing/recovery/merging feature was added.
+- API: POST /auth/signup and /auth/login use email credentials; POST /auth/legacy-login and temporary legacy-body compatibility on /auth/login are limited to unenrolled accounts. POST /auth/enroll-email accepts only email/current_password for the authenticated user. /auth/me and other UserOut responses include email and email_verified=false. Existing financial routes and ownership checks are unchanged.
+
+### Security and migration
+
+Server-side email-validator validates syntax without network/DNS checks, trims surrounding whitespace, ASCII-normalizes international domains, rejects non-ASCII local parts and lowercases the entire address for consistent case-insensitive lookup. Plus tags and dots are preserved. Format validation does not verify mailbox ownership. Unique email plus a canonical-value CHECK is enforced by both database dialects, including concurrent signup/enrollment races; collisions return 409 and roll back. Password hashing, dummy-hash generic login failure, session cookies, expiry and existing rate limits remain.
+
+Schema 5 adds only email_accounts (user ID PK/FK, unique canonical email, password hash). It does not rebuild users/credentials or infer emails from account IDs. Existing sessions, IDs, financial minor-unit amounts and chat records remain. Successful enrollment copies the existing hash and disables that account's legacy login without deleting its credential/data. No matching-name/email ledger claiming or account merging is permitted. SQLite version-4 migration and repeat migration were tested on synthetic data, including preserved old credentials/session/transaction rows and the version-4 backup. PostgreSQL retains transactional migration, backup attestation for upgrades, RLS, private schema, sequence checks and fail-closed audit; live PostgreSQL upgrade execution remains unverified. POSTGRES_BACKUP_CONFIRMED was never set.
+
+### Files changed for this request
+
+Backend: auth.py, main.py, models.py, schemas.py, migrations.py, postgres_storage.py, enroll_legacy.py, requirements.txt; new test_email_auth.py; updated test_regressions.py, test_postgres_storage.py and test_postgres_integration.py. Frontend: AuthScreen.jsx, new EmailEnrollment.jsx, App.jsx, api.js, test-api.cjs, test-render.cjs and test-workflows.cjs. Documentation: this report, DEPLOYMENT.md and MANUAL_BROWSER_CHECKLIST.md. Other pending design edits predate this request and were preserved.
+
+### Verification evidence
+
+- Final backend discovery: 51 tests, 48 passed and 3 live PostgreSQL tests skipped, 47.273 seconds. No failures.
+- New isolated real-HTTP tests cover syntax/normalization, plus/dot preservation, email signup/login, default income, session restoration, generic wrong/missing-account responses, duplicate casing, racing signups (one success/one 409), duplicate display names, database canonical CHECK, legacy login/enrollment, incorrect password, taken email, rejected user-ID injection, post-enrollment email login/legacy rejection, and financial/chat isolation.
+- Frontend npm test: 33 passing check groups (12 API, 13 render/auth states including legacy mode, 5 overview, 3 design-system). React rendering is not real-browser verification.
+- node test-workflows.cjs: 6 passing real-HTTP groups on a new temporary SQLite backend. Includes email signup/login, profile, financial CRUD/budgets/bills/imports, deterministic test-only Coco Save/Cancel, backend-restart and logout/login persistence, two-account isolation and expired multipart upload. No production writes.
+- Production npm run build passed: 58 transformed modules, assets index-BINstk55.css / index-CmVUE2kn.js.
+- Browser discovery returned no apps/browsers. Real desktop/mobile interaction, autofill, keyboard and email enrollment UX remain unverified; see manual checklist. No screenshots claimed.
+- No isolated PostgreSQL URL was supplied. The three opt-in live PostgreSQL tests, including new unique/canonical-email constraint checks, were skipped. SQLite/offline tests are not PostgreSQL evidence. Email verification/recovery and retirement of the temporary legacy path are future work, not completed features.
+
+### Deployment steps (not executed)
+
+DEPLOYMENT.md contains the exact schema-5 release sequence and rollback limits. Rehearse on disposable PostgreSQL first, snapshot the real target before any upgrade, install requirements, run the PostgreSQL manage_database.py migrate and verify commands using the existing protected environment, and remove the temporary backup-attestation flag afterward. Coordinate a signup maintenance window and release backend before matching frontend; old frontend username signup and new frontend email signup cannot share the old contract. Preserve existing environment/CORS/cookies/VITE_API_URL. Existing users use older-account login, then Account enrollment with their current password; no automatic email assignment occurs. Old binaries cannot serve schema 5/email-only users: rollback requires a matched snapshot/code version with reconciliation of new writes, never lowering the version marker or deleting accounts.
+
+
+## Backend-only email-auth release preparation
+
+Reviewed schema 5 and DEPLOYMENT.md for the requested backend-only commit. Existing PostgreSQL versions 2/3/4 require a completed, restorable snapshot/export and operator backup attestation; no automatic PostgreSQL backup is created. Fresh/unchanged schema-5 runs do not need the flag. SQLite has its existing online backup/startup migration; manage_database.py is PostgreSQL-only (the earlier same-command SQLite guidance was corrected). No production connection, migration, backup flag, environment change or deployment was performed.
+
+Only backend email-auth code/migrations/tests and relevant documentation sections are included. Pending frontend code and unrelated earlier design/CORS documentation are excluded and preserved locally. The repository's pre-update frontend uses old /users onboarding and cannot provide secured/email auth. The live Vercel revision was not inspected. A username-auth frontend retains legacy login/session compatibility for unenrolled users, but its signup is incompatible. Coordinate a separate matching frontend release before email enrollment or reopening signup. render.yaml has autoDeploy:false; actual dashboard automation was not accessed or certified.
+
+Rollback cannot be a simple old-code redeploy: old schema guards reject version 5, and email-only accounts have no legacy credentials. Stop writers and reconcile writes before restoring a matched snapshot/code revision. Never lower version markers or delete credentials/accounts to force compatibility. Exact manual Render build/start/migration and release-gating steps are in DEPLOYMENT.md.
+
+Backend-only release validation rerun: 51 tests in 41.639 seconds; 48 passed, 3 live PostgreSQL tests skipped (no isolated target). No failures. No frontend or production tests were run during this release preparation.

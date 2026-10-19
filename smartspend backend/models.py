@@ -14,6 +14,12 @@ class User(Base):
     monthly_income = Column(Money, nullable=False, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    email_account = relationship("EmailAccount", uselist=False)
+
+    @property
+    def email(self):
+        return self.email_account.email if self.email_account else None
+
     budgets = relationship("Budget", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
     bills = relationship("Bill", back_populates="user", cascade="all, delete-orphan")

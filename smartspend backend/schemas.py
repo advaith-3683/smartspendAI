@@ -19,7 +19,7 @@ class InputModel(BaseModel):
                 raise ValueError("Money allows at most two decimal places")
         if name in {"name", "category", "item_name", "message", "raw_text"} and not value:
             raise ValueError("Text must not be empty")
-        if isinstance(value, str) and len(value) > {"message": 4000, "raw_text": 100000, "note": 1000, "password": 128}.get(name, 100):
+        if isinstance(value, str) and len(value) > {"message": 4000, "raw_text": 100000, "note": 1000, "password": 128, "email": 254}.get(name, 100):
             raise ValueError("Text exceeds allowed length")
         if name == "month" and value is not None and not 1 <= value <= 12:
             raise ValueError("Invalid month")
@@ -45,6 +45,8 @@ class UserCreate(InputModel):
 
 
 class UserOut(BaseModel):
+    email: Optional[str] = None
+    email_verified: bool = False
     id: int
     name: str
     monthly_income: float

@@ -78,6 +78,7 @@ async def request_limits(request: Request, call_next):
 # ---------- Users ----------
 
 class Signup(auth.Login, schemas.UserCreate):
+    monthly_income: schemas.Decimal = schemas.Decimal("0")
     model_config = {"str_strip_whitespace": False}
 
     @schemas.field_validator("name", mode="before")
@@ -91,25 +92,53 @@ def signup(req: Signup, response: Response, db: Session = Depends(get_db)):
     user = models.User(name=req.name, monthly_income=req.monthly_income)
     db.add(user)
     db.flush()
-    db.add(auth.Credential(user_id=user.id, username=req.username.lower(), password_hash=auth.password_hash(req.password)))
+    db.add(auth.EmailAccount(user_id=user.id, email=req.email, password_hash=auth.password_hash(req.password)))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Username unavailable")
+        raise HTTPException(409, "Email unavailable")
     auth.issue_session(db, response, user.id)
     return user
 
 
 @app.post("/auth/login", response_model=schemas.UserOut)
-def login(req: auth.Login, response: Response, db: Session = Depends(get_db)):
-    credential = db.query(auth.Credential).filter_by(username=req.username.lower()).first()
+def login(req: auth.Login | auth.LegacyLogin, response: Response, db: Session = Depends(get_db)):
+    if isinstance(req, auth.LegacyLogin):
+        credential = db.query(auth.Credential).filter_by(username=req.username.lower()).first()
+        if credential and db.get(auth.EmailAccount, credential.user_id):
+            credential = None
+    else:
+        credential = db.query(auth.EmailAccount).filter_by(email=req.email).first()
     # Perform the same expensive hash when the username does not exist.
     stored = credential.password_hash if credential else DUMMY_HASH
     if not auth.password_matches(req.password, stored) or not credential:
-        raise HTTPException(401, "Invalid username or password")
+        raise HTTPException(401, "Invalid sign-in details")
     auth.issue_session(db, response, credential.user_id)
     return db.get(models.User, credential.user_id)
+
+
+@app.post("/auth/legacy-login", response_model=schemas.UserOut)
+def legacy_login(req: auth.LegacyLogin, response: Response, db: Session = Depends(get_db)):
+    return login(req, response, db)
+
+
+@app.post("/auth/enroll-email", response_model=schemas.UserOut)
+def enroll_email(req: auth.EmailEnrollment, user=Depends(auth.current_user), db: Session = Depends(get_db)):
+    legacy = db.get(auth.Credential, user.id)
+    stored = legacy.password_hash if legacy else DUMMY_HASH
+    if not auth.password_matches(req.current_password, stored) or not legacy:
+        raise HTTPException(403, "Invalid sign-in details")
+    if db.get(auth.EmailAccount, user.id):
+        raise HTTPException(409, "This account already has an email")
+    db.add(auth.EmailAccount(user_id=user.id, email=req.email, password_hash=legacy.password_hash))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Email unavailable")
+    db.expire(user, ["email_account"])
+    return user
 
 
 @app.get("/auth/me", response_model=schemas.UserOut)

@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, CheckConstraint
 from database import Base, get_db
 import models
 
@@ -31,8 +31,41 @@ class AuthSession(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
 
+class EmailAccount(Base):
+    __tablename__ = "email_accounts"
+    __table_args__ = (CheckConstraint("email = lower(email) AND email = trim(email) AND length(email) <= 254", name="ck_email_canonical"),)
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    email = Column(String(254), nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)
+
+
+def normalize_email(value):
+    from email_validator import validate_email, EmailNotValidError
+    if not isinstance(value, str):
+        raise ValueError("Enter a valid email address")
+    try:
+        result = validate_email(value.strip(), check_deliverability=False, allow_smtputf8=False)
+        canonical = result.ascii_email.lower()
+        if len(canonical) > 254:
+            raise ValueError("Email is too long")
+        return canonical
+    except EmailNotValidError:
+        raise ValueError("Enter a valid email address") from None
+
+
 class Login(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=False)
+    model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
+    email: str
+    password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def canonical_email(cls, value):
+        return normalize_email(value)
+
+
+class LegacyLogin(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
     username: str = Field(min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str = Field(min_length=12, max_length=128)
 
@@ -40,6 +73,18 @@ class Login(BaseModel):
     @classmethod
     def trim_username(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+
+class EmailEnrollment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str
+    current_password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def canonical_email(cls, value):
+        return normalize_email(value)
+
 
 def password_hash(password):
     salt = secrets.token_bytes(16)
