@@ -97,7 +97,7 @@ main.engine.dispose()
                     llm_coach._ensure_configured()
             self.assertEqual(thread.call_count, 1)
             self.assertTrue(thread.call_args.kwargs['daemon'])
-            event.wait.assert_called_with(5)
+            event.wait.assert_called_with(10)
 
     def test_expired_security_audit_deadline_refuses_before_any_query(self):
         from postgres_storage import audit_connection
@@ -120,8 +120,8 @@ main.engine.dispose()
         from postgres_storage import verify_postgres
         from sqlalchemy import MetaData
         engine = MagicMock(); connection = engine.connect.return_value
-        with patch('postgres_storage.audit_connection', return_value={'version': 5}) as audit:
-            self.assertEqual(verify_postgres(engine, MetaData()), {'version': 5})
+        with patch('postgres_storage.audit_connection', return_value={'version': 6}) as audit:
+            self.assertEqual(verify_postgres(engine, MetaData()), {'version': 6})
             self.assertIn('deadline', audit.call_args.kwargs)
             self.assertIn("statement_timeout = '15s'", str(connection.execute.call_args_list[0].args[0]))
             self.assertIn("lock_timeout = '5s'", str(connection.execute.call_args_list[1].args[0]))

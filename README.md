@@ -50,14 +50,16 @@ Replace `123` with the externally verified ledger ID. Hidden prompts collect the
 
 ## Workspace
 
-- **Overview:** income, actual incurred spending, remaining income, projected spending, actual category breakdown including unbudgeted categories, current overdue/upcoming reminders and quick actions.
+- **Home:** budget risk/overspending alerts, tap-to-record/tap-to-stop-and-send Coco voice entry with an automatic-save switch, income, actual incurred spending, remaining income, projected spending, actual category breakdown including unbudgeted categories, current overdue/upcoming reminders and quick actions.
 - **Transactions:** selected-month ledger, search/category/frequency filters, add/edit/delete, SMS/statement preview and reviewed imports.
 - **Budgets & Bills:** explicit category budgets, progress/projections and recurring paid/unpaid actions.
 - **Goals & Insights:** conservative savings plans, subscriptions, selected-period anomalies and weekly digest.
-- **Coco:** account-backed chat and voice controls. Expense tools create persisted proposals only. Save records one expense; Cancel records none. Repeating Save does not duplicate spending.
+- **Coco:** account-backed chat and spoken replies. Voice expense entry lives on Home. Expense tools create persisted proposals only. Save records one expense; Cancel records none. Repeating Save does not duplicate spending.
 - **Account:** profile/income editing and session logout.
 
 Desktop sidebar and compact mobile navigation share the same features. Focus states, labels, loading/error/empty states and success feedback are included. No fabricated financial data is seeded into screens.
+
+Home shows a loading indicator while restoring saved expense proposals. A failed load displays an error with **Retry saved proposals**; retry reloads the saved list without resending chat, saving expenses, or restarting the microphone. Budget progress and weekly bill reminders use middle-dot separators between their labels and values.
 
 ## Financial semantics
 
@@ -73,6 +75,8 @@ Weekly digest totals exclude `monthly` recurring payments and say so. A zero pri
 
 ## Imports and AI limits
 
+Gemini is limited to **four provider requests per account in any rolling 24 hours**, shared by chat (including Home voice), coaching advice, weekly narration and savings narration. Failed attempts, fallback models and automatic expense-tool follow-up requests each count. Reservations commit before provider access and survive chat failure, logout and server restarts; database locks prevent concurrent requests from exceeding four. Missing AI configuration and saved-record guidance do not consume calls. At the limit, deterministic guidance and core expense tracking remain available. Schema version 6 adds the private `gemini_calls` table; see the schema-6 deployment note in DEPLOYMENT.md before upgrading hosted storage.
+
 Explicit debit/withdrawal columns take precedence over generic amounts; credit/deposit/balance columns cannot become debit columns. Generic negative signed amounts are expenses; positives are skipped. Explicit DR/debit/withdrawal/expense types import, while CR/credit/deposit/income types do not. Ambiguous unsigned rows are skipped. Review bank conventions before committing.
 
 Previews allow selecting rows and editing date, merchant, category and amount. Invalid explicit dates are skipped; undated SMS defaults to today. CSV dates accept ISO and defined day-first formats. Keyword categorization is local; unknown merchants remain Uncategorized. Table-based PDFs are supported; scanned/encrypted/unusual layouts can need conversion to CSV.
@@ -81,7 +85,7 @@ The UI assigns each parsed batch a stable retry key. Repeating its commit after 
 
 Limits: 5 MiB file, 6 MiB total body, 30 PDF pages, 500 statement rows/commit transactions, 100,000 SMS characters, 4,000 chat characters, latest 100 chat messages returned, 20 turns/20,000 characters of model history, 10 proposals per response and at most 100 pending proposals. Older stored chats are retained.
 
-Gemini has a 30-second timeout, retries disabled, 1,200 output-token cap and 8,000-character response cap. Savings/digest figures remain available if AI narration fails. The inherited `google-generativeai` dependency is deprecated; live Gemini compatibility remains unverified. No paid service is required for core tracking, persistence, imports or deterministic planning.
+Gemini uses an 8-second timeout per provider call, SDK retries disabled, a 1,200 output-token cap and an 8,000-character response cap. Coco tries the configured model, then GEMINI_FALLBACK_MODEL (default gemini-2.5-flash-lite); failed models have a 30-second cooldown. It never retries a conversation on another model after an expense tool has run. AI initialization waits at most 10 seconds without blocking application startup. When AI fails or is unconfigured, chat and advice return explicitly labeled guidance from saved records; savings and weekly summaries retain deterministic results. Failed chat attempts discard partial expense proposals before saving the fallback conversation. In this mode, expense entry uses Add transaction and free-form AI responses are unavailable. Provider logs include exception classes only, without prompts, financial data or credentials. The inherited `google-generativeai` dependency remains deprecated. No paid service is required for core tracking, persistence, imports or deterministic planning.
 
 Rate limits are per client IP, in-process: 10 auth requests/minute, 10 AI/import/goal/history requests/minute, 180 other requests/minute. Proposal review actions use the general limit. Use one worker, or add a shared gateway/limiter before scaling. Configure trusted proxy handling and server body/time limits explicitly.
 
@@ -92,8 +96,7 @@ Rate limits are per client IP, in-process: 10 auth requests/minute, 10 AI/import
 & '.\smartspend backend\venv\Scripts\python.exe' -m unittest discover -s 'smartspend backend' -p test_regressions.py -v
 # Frontend directory
 npm.cmd run build
-node test-render.cjs
-node test-api.cjs
+npm.cmd test
 ```
 
 See [COMPLETION_REPORT.md](COMPLETION_REPORT.md) for actual results and unverified deployment/browser integrations. No deployment or push is performed by these commands.

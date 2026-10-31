@@ -8,10 +8,6 @@ from sqlalchemy import func
 import models
 from utils import normalize_category
 
-MISCELLANEOUS = "Miscellaneous"
-DEFAULT_MISC_LIMIT = Decimal("2000.0")
-
-
 def resolve_transaction_category(db: Session, user_id: int, raw_category: str, year: int, month: int) -> str:
     """Preserve the category; budgets are always an explicit user decision."""
     return normalize_category(raw_category)
@@ -19,6 +15,19 @@ def resolve_transaction_category(db: Session, user_id: int, raw_category: str, y
 
 def get_days_in_month(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
+
+
+def _get_category_budget(db: Session, user_id: int, category: str, year: int, month: int):
+    return (
+        db.query(models.Budget)
+        .filter(
+            models.Budget.user_id == user_id,
+            models.Budget.category == category,
+            models.Budget.year == year,
+            models.Budget.month == month,
+        )
+        .first()
+    )
 
 
 def calculate_pace(db: Session, user_id: int, category: str, year: int, month: int, today: date = None):
@@ -31,16 +40,7 @@ def calculate_pace(db: Session, user_id: int, category: str, year: int, month: i
         today = date.today()
 
     category = normalize_category(category)
-    budget = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.category == category,
-            models.Budget.year == year,
-            models.Budget.month == month,
-        )
-        .first()
-    )
+    budget = _get_category_budget(db, user_id, category, year, month)
     if budget is None:
         return None
 
@@ -100,16 +100,7 @@ def calculate_pace(db: Session, user_id: int, category: str, year: int, month: i
 def evaluate_purchase(db: Session, user_id: int, category: str, item_cost: float, year: int, month: int):
     """'Should I Buy This?' calculator."""
     category = normalize_category(category)
-    budget = (
-        db.query(models.Budget)
-        .filter(
-            models.Budget.user_id == user_id,
-            models.Budget.category == category,
-            models.Budget.year == year,
-            models.Budget.month == month,
-        )
-        .first()
-    )
+    budget = _get_category_budget(db, user_id, category, year, month)
     spent_so_far = sum((row[0] for row in (
         db.query(models.Transaction.amount)
         .filter(

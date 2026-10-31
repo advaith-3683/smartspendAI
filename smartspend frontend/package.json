@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test-api.cjs && node test-render.cjs && node test-overview.cjs && node test-design-system.cjs",
+    "test": "node test-api.cjs && node test-render.cjs && node test-overview.cjs && node test-design-system.cjs && node test-voice.cjs",
     "test:workflows": "node test-workflows.cjs"
   },
   "dependencies": {

@@ -1,19 +1,109 @@
 import os
 import importlib
 import threading
+import time
+import logging
+import re
 from startup_telemetry import startup_stage
+from ai_quota import GeminiDailyLimitReached
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or '').strip()
+MODEL_NAME = (os.getenv("GEMINI_MODEL") or 'gemini-flash-latest').strip() or 'gemini-flash-latest'
 GENERATION_CONFIG = {"max_output_tokens": 1200}
-REQUEST_OPTIONS = {"timeout": 30, "retry": None}
+REQUEST_OPTIONS = {"timeout": 8, "retry": None}
+FALLBACK_MODEL = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite').strip()
+_unavailable_until = {}
+_provider_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 _configured = False
 genai = None
 _initialization_started = False
 _initialization_done = threading.Event()
 _initialization_lock = threading.Lock()
-AI_INITIALIZATION_TIMEOUT = 5
+AI_INITIALIZATION_TIMEOUT = 10
+
+
+def _generate(operation, can_retry=lambda: True):
+    """Try at most two models, cooling down failures without logging private data."""
+    _ensure_configured()
+    last_error = None
+    for name in dict.fromkeys(filter(None, (MODEL_NAME, FALLBACK_MODEL))):
+        with _provider_lock:
+            cooling_down = _unavailable_until.get(name, 0) > time.monotonic()
+        if cooling_down:
+            continue
+        try:
+            text = operation(name).text
+            if not text or not text.strip():
+                raise ValueError('Empty AI response')
+            return text.strip()[:8000]
+        except GeminiDailyLimitReached:
+            # Account quota is not a provider outage and must not trigger failover.
+            raise
+        except Exception as error:
+            last_error = error
+            logger.warning('Coco provider attempt failed: %s', type(error).__name__)
+            with _provider_lock:
+                _unavailable_until[name] = time.monotonic() + 30
+            if not can_retry():
+                break
+    raise RuntimeError('Coco is using recorded-data guidance') from last_error
+
+
+def _metered_model(name, reserve_call, **kwargs):
+    if reserve_call is None:
+        raise RuntimeError('Gemini calls require an account quota guard')
+    model = genai.GenerativeModel(name, **kwargs)
+    generate = model.generate_content
+    def guarded_generate(*args, **options):
+        # ChatSession's automatic tool loop calls this method again on every RPC.
+        reserve_call()
+        return generate(*args, **options)
+    model.generate_content = guarded_generate
+    return model
+
+
+def quota_notice(error):
+    if isinstance(error, GeminiDailyLimitReached):
+        return 'Your account has used its four Gemini calls in the last 24 hours. Saved-record guidance remains available until a call slot opens. '
+    return ''
+
+
+def recorded_guidance(user_name, monthly_income, pace_data, total_spent=None,
+                      remaining=None, recent_transactions=None, message=''):
+    """Useful, explicit non-generative guidance; never invent facts or save expenses."""
+    text = message.lower()
+    prefix = 'Using your saved records: '
+    if re.search(r'^\s*(?:i|we)\s+(?:just\s+)?(?:spent|paid|bought)\b|^\s*(?:log|record|add)\b|^\s*(?:spent|paid)\s+\d', text):
+        return (prefix + 'use Add transaction to enter the amount, category and date, then save it. '
+                'I have not recorded an expense from this message.')
+    if 'challenge' in text:
+        return (prefix + 'try this 7-day savings challenge: track every expense today; review subscriptions tomorrow; '
+                'plan meals on day 3; pause an optional purchase on day 4; choose a free activity on day 5; '
+                'review category budgets on day 6; and compare your recorded spending on day 7. '
+                'Keep essential bills covered throughout.')
+    lines = []
+    if total_spent is not None:
+        lines.append(f'You have recorded INR {total_spent:,.2f} in spending for the selected month, '
+                     f'with INR {remaining:,.2f} of your monthly income remaining.')
+    if any(word in text for word in ('biggest', 'largest', 'most')) and recent_transactions:
+        largest = max(recent_transactions, key=lambda txn: txn['amount'])
+        lines.append(f"The largest of the recent transactions available here is INR {largest['amount']:,.2f} "
+                     f"for {largest['category']} on {largest['date']}.")
+    risks = [p for p in pace_data if p['status'] in ('at_risk', 'over_budget')]
+    if risks:
+        p = max(risks, key=lambda row: row['percent_of_budget_projected'])
+        lines.append(f"Review {p['category']}: recorded spending is INR {p['spent_so_far']:,.2f} "
+                     f"against a budget of INR {p['monthly_limit']:,.2f}.")
+    elif pace_data:
+        lines.append('Your budgeted categories are currently on track based on recorded spending and projections.')
+    else:
+        lines.append('Set category budgets to compare your spending with a monthly plan.')
+    if any(word in text for word in ('save', 'saving', 'advice')) or total_spent is None:
+        lines.append('Protect essential bills, review optional spending, and use Goals & insights for a savings plan based on your history.')
+    lines.append('This is a summary of saved records; free-form AI advice will resume when available.')
+    return prefix + ' '.join(lines)
 
 
 def _initialize_sdk():
@@ -83,12 +173,11 @@ def build_prompt(user_name: str, monthly_income: float, pace_data: list[dict]) -
     return "\n".join(lines)
 
 
-def get_coaching_advice(user_name: str, monthly_income: float, pace_data: list[dict]) -> str:
+def get_coaching_advice(user_name: str, monthly_income: float, pace_data: list[dict], *, reserve_call=None) -> str:
     _ensure_configured()
     prompt = build_prompt(user_name, monthly_income, pace_data)
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
-    return response.text.strip()[:8000]
+    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+        prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
 def build_digest_prompt(user_name: str, digest: dict) -> str:
@@ -145,12 +234,11 @@ def build_digest_prompt(user_name: str, digest: dict) -> str:
     return "\n".join(lines)
 
 
-def get_weekly_digest(user_name: str, digest: dict) -> str:
+def get_weekly_digest(user_name: str, digest: dict, *, reserve_call=None) -> str:
     _ensure_configured()
     prompt = build_digest_prompt(user_name, digest)
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
-    return response.text.strip()[:8000]
+    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+        prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
 def build_goal_prompt(user_name: str, plan: dict) -> str:
@@ -195,12 +283,11 @@ def build_goal_prompt(user_name: str, plan: dict) -> str:
     return "\n".join(lines)
 
 
-def get_goal_advice(user_name: str, plan: dict) -> str:
+def get_goal_advice(user_name: str, plan: dict, *, reserve_call=None) -> str:
     _ensure_configured()
     prompt = build_goal_prompt(user_name, plan)
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
-    return response.text.strip()[:8000]
+    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+        prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
 def build_system_context(
@@ -297,6 +384,7 @@ def chat_reply(
     anomalies: list[dict] | None = None,
     subscriptions: list[dict] | None = None,
     log_expense_fn=None,
+    *, reserve_call=None,
 ) -> str:
     """Continue a multi-turn conversation with Coco, grounded in live budget data.
 
@@ -312,8 +400,13 @@ def chat_reply(
         user_name, monthly_income, pace_data, total_spent, remaining, recent_transactions,
         anomalies, subscriptions,
     )
-    tools = [log_expense_fn] if log_expense_fn else None
-    model = genai.GenerativeModel(MODEL_NAME, system_instruction=system_context, tools=tools)
+    tool_used = False
+    def log_expense(amount: float, category: str, merchant: str = None, note: str = None, txn_date: str = None) -> dict:
+        """Propose an expense for review; only the user's Save action records spending."""
+        nonlocal tool_used
+        tool_used = True
+        return log_expense_fn(amount=amount, category=category, merchant=merchant, note=note, txn_date=txn_date)
+    tools = [log_expense] if log_expense_fn else None
 
     chat_history = [
         {"role": turn["role"], "parts": [turn["content"]]}
@@ -321,9 +414,9 @@ def chat_reply(
         if turn.get("content")
     ]
 
-    chat = model.start_chat(
-        history=chat_history,
-        enable_automatic_function_calling=bool(log_expense_fn),
-    )
-    response = chat.send_message(message, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
-    return response.text.strip()[:8000]
+    def send(name):
+        model = _metered_model(name, reserve_call, system_instruction=system_context, tools=tools)
+        chat = model.start_chat(history=chat_history,
+                                enable_automatic_function_calling=bool(log_expense_fn))
+        return chat.send_message(message, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
+    return _generate(send, can_retry=lambda: not tool_used)

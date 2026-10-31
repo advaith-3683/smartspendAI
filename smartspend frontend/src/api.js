@@ -1,4 +1,4 @@
-const BASE_URL = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://smartspend-backend-lsk5.onrender.com')).replace(/\/+$/, '')
+const BASE_URL = ((import.meta.env.VITE_API_URL || '').trim() || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://smartspend-backend-lsk5.onrender.com')).replace(/\/+$/, '')
 let sessionVersion = 0
 const pending = new Set()
 
@@ -16,34 +16,53 @@ async function request(path, options = {}) {
   const timeout = setTimeout(() => controller.abort(), 60000)
   try {
     const isUpload = typeof FormData !== 'undefined' && options.body instanceof FormData
-    const res = await fetch(`${BASE_URL}${path}`, {
-      ...options,
-      credentials: 'include',
-      signal: controller.signal,
-      headers: { ...(!isUpload && options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
-    })
+    let res
+    try {
+      res = await fetch(`${BASE_URL}${path}`, {
+        ...options,
+        credentials: 'include',
+        signal: controller.signal,
+        headers: { ...(!isUpload && options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
+      })
+    } catch (err) {
+      // Only a rejection of fetch itself is a transport/browser-policy failure.
+      // TypeErrors while interpreting an HTTP response must retain their status.
+      if (err instanceof TypeError && !controller.signal.aborted) {
+        const error = new Error('Your browser could not reach SmartSpend. Check your connection and retry. If this continues, report the site address; browser security or the API configuration may be blocking the request.')
+        error.code = 'network'; error.path = path
+        throw error
+      }
+      throw err
+    }
     if (version !== sessionVersion) throw new Error('Account changed. Please retry.')
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}))
       if (version !== sessionVersion) throw new Error('Account changed. Please retry.')
       if (res.status === 401 && !['/auth/login', '/auth/signup', '/auth/legacy-login'].includes(path)) window.dispatchEvent(new CustomEvent('smartspend:logout', { detail: { expired: path !== '/auth/me' } }))
-      const message = Array.isArray(detail.detail) ? detail.detail.map(e => e.msg).join('; ') : detail.detail
+      const value = detail?.detail
+      const message = Array.isArray(value) ? value.map(e => typeof e?.msg === 'string' ? e.msg : '').filter(Boolean).join('; ') : value
       const error = new Error(res.status >= 500 ? `SmartSpend is temporarily unavailable (HTTP ${res.status}). Please retry shortly.` : typeof message === 'string' ? message : `Request failed: ${res.status}. Please retry.`)
       error.status = res.status
+      error.code = res.status === 401 ? 'authentication' : res.status === 403 ? 'authorization' : res.status === 422 ? 'validation' : res.status === 429 ? 'rate_limit' : 'http'
+      error.path = path
       throw error
     }
     if (res.status === 204) return null
-    const data = await res.json().catch(() => { throw new Error('Unexpected server response. Refresh your saved records before retrying a save.') })
+    const data = await res.json().catch(() => {
+      const error = new Error('Unexpected server response. Refresh your saved records before retrying a save.')
+      error.code = 'protocol'; error.status = res.status; error.path = path
+      throw error
+    })
     if (version !== sessionVersion) throw new Error('Account changed. Please retry.')
     return data
   } catch (err) {
     if (err.status === 401) throw err
     if (version !== sessionVersion) throw new Error('Account changed. Please retry.')
-    if (err instanceof TypeError) {
-      const error = new Error('Cannot connect to SmartSpend. Retry shortly. If it continues, report the site address to support.')
-      error.code = 'network'; throw error
+    if (controller.signal.aborted) {
+      const message = path.startsWith('/auth/') ? 'SmartSpend took too long to respond. Retry sign-in shortly. The service may be starting up.' : 'SmartSpend took too long to respond. Retry in a moment. Check your ledger before retrying a save.'
+      const error = new Error(message); error.code = 'timeout'; error.path = path
+      throw error
     }
-    if (controller.signal.aborted) { const error = new Error('SmartSpend took too long to respond. Retry in a moment. Check your ledger before retrying a save.'); error.code = 'timeout'; throw error }
     throw err
   } finally {
     pending.delete(controller)

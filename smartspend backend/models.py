@@ -1,5 +1,5 @@
 from money import Money
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Boolean
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Boolean, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -120,3 +120,12 @@ class ImportBatch(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     batch_key = Column(String(64), nullable=False)
     inserted = Column(Integer, nullable=False)
+
+
+class GeminiCall(Base):
+    """Committed before each provider request, independently of chat success."""
+    __tablename__ = "gemini_calls"
+    __table_args__ = (Index('ix_gemini_calls_user_time', 'user_id', 'called_at'),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    called_at = Column(DateTime, nullable=False)

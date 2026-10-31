@@ -15,7 +15,7 @@ class PostgresOfflineTests(unittest.TestCase):
         from unittest.mock import MagicMock
         from postgres_storage import migrate_postgres
         from database_diagnostics import DatabasePolicyError, DatabaseStageError
-        for version, empty, audit_failure in ((4, True, False), (4, False, False), (2, True, False), (3, True, False), (5, False, False), (4, True, True)):
+        for version, empty, audit_failure in ((4, True, False), (4, False, False), (2, True, False), (3, True, False), (5, False, False), (6, False, False), (4, True, True)):
             with self.subTest(version=version, empty=empty, audit_failure=audit_failure):
                 metadata = MetaData()
                 Table('users', metadata, Column('id', Integer, primary_key=True))
@@ -27,14 +27,14 @@ class PostgresOfflineTests(unittest.TestCase):
                     result.scalars.return_value.all.return_value = [version] if 'SELECT version' in str(statement) else []
                     return result
                 connection.execute.side_effect = execute
-                blocked = version in (2, 3) or (version == 4 and not empty)
-                with patch.dict(os.environ, {'POSTGRES_BACKUP_CONFIRMED': ''}), patch('postgres_storage.private_metadata', return_value=metadata), patch('postgres_storage.inspect', return_value=inspector), patch('postgres_storage.lock_and_check_empty_v4', return_value=empty) as exemption, patch.object(metadata, 'create_all') as ddl, patch('postgres_storage.audit_connection', side_effect=DatabasePolicyError('api_privileges') if audit_failure else None, return_value={'version': 5}) as audit:
+                blocked = version in (2, 3, 5) or (version == 4 and not empty)
+                with patch.dict(os.environ, {'POSTGRES_BACKUP_CONFIRMED': ''}), patch('postgres_storage.private_metadata', return_value=metadata), patch('postgres_storage.inspect', return_value=inspector), patch('postgres_storage.lock_and_check_empty_v4', return_value=empty) as exemption, patch.object(metadata, 'create_all') as ddl, patch('postgres_storage.audit_connection', side_effect=DatabasePolicyError('api_privileges') if audit_failure else None, return_value={'version': 6}) as audit:
                     if blocked or audit_failure:
                         with self.assertRaises(DatabaseStageError):
                             migrate_postgres(engine, metadata)
                         self.assertIsNotNone(connection.begin.return_value.__exit__.call_args.args[0])
                     else:
-                        self.assertEqual(migrate_postgres(engine, metadata), {'version': 5})
+                        self.assertEqual(migrate_postgres(engine, metadata), {'version': 6})
                     if version == 4: exemption.assert_called_once()
                     else: exemption.assert_not_called()
                     if blocked:
@@ -170,7 +170,7 @@ class PostgresOfflineTests(unittest.TestCase):
             result = MagicMock(); result.scalar.return_value = value
             return result
         roles = MagicMock(); roles.scalars.return_value.all.return_value = ['anon']
-        version = MagicMock(); version.scalars.return_value.all.return_value = [5]
+        version = MagicMock(); version.scalars.return_value.all.return_value = [6]
         connection.execute.side_effect = [catalog, scalar(False), scalar(0), roles,
                                           scalar(False), scalar(False), scalar(False), version]
         self.assertFalse(audit_connection(connection, metadata)['public_access'])

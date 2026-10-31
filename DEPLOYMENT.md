@@ -1,5 +1,13 @@
 # Supabase PostgreSQL + Render + Vercel setup
 
+## Gemini account quota: schema 6 (not deployed)
+
+This additive release limits every account to four Gemini provider attempts per rolling 24 hours, shared across chat, advice, weekly narration and savings narration. Failed provider requests, model failover and every automatic function-call follow-up consume separate slots. The server reserves a slot in a committed transaction before calling Gemini. SQLite uses BEGIN IMMEDIATE; PostgreSQL uses READ COMMITTED and an account row lock. Failed chat/proposal rollbacks do not refund attempts. At the cap, existing deterministic guidance is returned with a clear quota notice. No client-supplied counter or browser storage is trusted. Usage begins when this release is deployed; old provider calls cannot be reconstructed from existing account records.
+
+Schema 6 adds `smartspend.gemini_calls` with a user/time index, retaining private-schema RLS and API-role privilege revocations. This section supersedes earlier references to schema 5 as the current target. Before upgrading a hosted schema 2/3/4/5, take a restorable database backup and retain matching old code. Set POSTGRES_BACKUP_CONFIRMED=true only for the protected upgrade process, then run `python manage_database.py migrate` and `python manage_database.py verify` against the intended database. Remove the temporary attestation afterward and release the matching backend. Fresh initialization and repeat schema-6 migration do not require the attestation; the existing narrow, locked empty-v4 exemption remains. SQLite upgrades back up existing files automatically and preserve account/financial records.
+
+Do not deploy old schema-5 code against schema 6 or lower the version marker to roll back. Restore matching code and a real backup with writers stopped if rollback is necessary. Deploy the backend to activate the limit; no new environment variable, frontend release, credential change or paid service is required. No hosted migration or deployment was performed during implementation. Offline PostgreSQL SQL/security checks and SQLite concurrency tests do not replace a rehearsal on a separately confirmed disposable PostgreSQL database.
+
 No deployment, push, production connection or edit to a real `.env` was performed. These instructions supersede the earlier Neon/default-schema deployment notes.
 
 ## Frontend configuration follow-up (19 October 2026; not deployed)

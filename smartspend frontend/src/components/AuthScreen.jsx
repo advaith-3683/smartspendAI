@@ -5,9 +5,15 @@ import { Brand, Introduction, FinanceMotif } from './design/Identity.jsx'
 import { Notice } from './design/Notice.jsx'
 import './AuthScreen.css'
 
+export function authErrorTitle(error) {
+  const titles = { network: 'Connection unavailable', timeout: 'Connection timed out', authentication: 'Sign-in not accepted', authorization: 'Request not allowed', validation: 'Check your sign-in details', rate_limit: 'Too many attempts', protocol: 'Unexpected server response', session: 'Session could not be restored', http: 'Service request failed' }
+  if (error?.code === 'http' && error.status >= 500) return 'Service unavailable'
+  return titles[error?.code] || 'Session check failed'
+}
+
 export function ConnectionAlert({ message, onRetry, busy = false }) {
   if (!message) return null
-  return <Notice className="connection-alert" title="Connection unavailable" action={<button type="button" className="text-button" disabled={busy} onClick={onRetry}><Icon name="refresh" />{busy ? 'Trying again...' : 'Retry'}</button>}><p>{message}</p></Notice>
+  return <Notice className="connection-alert" title={authErrorTitle(message)} action={<button type="button" className="text-button" disabled={busy} onClick={onRetry}><Icon name="refresh" />{busy ? 'Trying again...' : 'Retry'}</button>}><p>{message.message || String(message)}</p></Notice>
 }
 
 export default function AuthScreen({ onCreated, sessionError, onRetrySession, retryingSession }) {
@@ -33,11 +39,11 @@ export default function AuthScreen({ onCreated, sessionError, onRetrySession, re
       else await api.login(credentials)
       let user
       try { user = await api.me() } catch (err) {
-        if (err.status === 401) throw new Error('Sign-in was accepted, but the session could not be restored. Retry sign-in. If this repeats, report the session error to support.')
+        if (err.status === 401) throw Object.assign(new Error('Sign-in was accepted, but the browser session could not be restored. Retry sign-in. If this repeats, check browser cookie settings or report the session error to support.'), { code: 'session', status: 401 })
         throw err
       }
       onCreated(user)
-    } catch (err) { setError(err.message) }
+    } catch (err) { setError(err) }
     finally { locked.current = false; setLoading(false) }
   }
   return <main className="auth-page"><header className="auth-masthead"><Brand /></header><div className="auth-grid">
@@ -49,7 +55,7 @@ export default function AuthScreen({ onCreated, sessionError, onRetrySession, re
         <div className="field"><label htmlFor="email">{legacy && !signup ? 'Legacy account ID' : 'Email'}</label><input id="email" type={legacy && !signup ? 'text' : 'email'} required maxLength={legacy && !signup ? 100 : 254} autoComplete={legacy && !signup ? 'username' : 'email'} aria-describedby={error ? 'auth-error' : undefined} autoCapitalize="none" spellCheck={false} value={email} onChange={e => setEmail(e.target.value)} /></div>
         <div className="field"><label htmlFor="password">Password</label><div className="password-field"><input id="password" type={visible ? 'text' : 'password'} required minLength={signup ? 12 : undefined} maxLength={128} autoComplete={signup ? 'new-password' : 'current-password'} aria-describedby={[signup && 'password-help', error && 'auth-error'].filter(Boolean).join(' ') || undefined} value={password} onChange={e => setPassword(e.target.value)} /><button type="button" className="password-toggle" aria-label={visible ? 'Hide password' : 'Show password'} aria-pressed={visible} onClick={() => setVisible(value => !value)}><Icon name="eye" />{visible ? 'Hide' : 'Show'}</button></div>{signup && <small id="password-help" className="field-hint">Use 12–128 characters. Choose a password you don’t use elsewhere.</small>}</div>
         {signup && <div className="field"><label htmlFor="income">Monthly income (optional) <span className="label-note">INR</span></label><input id="income" type="number" min="0" max="1000000000" step="0.01" inputMode="decimal" value={income} onChange={e => setIncome(e.target.value)} /><small className="field-hint">You can update this later.</small></div>}
-        {error && <div className="form-alert" role="alert" id="auth-error"><Icon name="alert" /><div><p>{error}</p><button type="button" className="text-button" disabled={loading} onClick={() => formRef.current?.requestSubmit()}>Try again</button></div></div>}
+        {error && <div className="form-alert" role="alert" id="auth-error"><Icon name="alert" /><div><strong>{authErrorTitle(error)}</strong><p>{error.message || String(error)}</p><button type="button" className="text-button" disabled={loading} onClick={() => formRef.current?.requestSubmit()}>Try again</button></div></div>}
         <button className="btn auth-submit" type="submit" disabled={loading || retryingSession}>{loading ? <><span className="spinner" />{signup ? 'Creating your account…' : 'Signing in…'}</> : signup ? 'Create account' : 'Sign in'}</button>
       </form>
       <p className="auth-switch">{signup ? 'Already have an account?' : 'New to SmartSpend?'} <button type="button" className="text-button" disabled={loading} onClick={() => { setSignup(value => !value); setLegacy(false); setEmail(''); setPassword(''); setVisible(false); setError('') }}>{signup ? 'Sign in' : 'Create an account'}</button></p>

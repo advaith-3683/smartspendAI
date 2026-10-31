@@ -9,7 +9,7 @@ from sqlalchemy import MetaData, inspect, text
 from database_diagnostics import DatabasePolicyError, database_stage
 
 SCHEMA = 'smartspend'
-VERSION = 5
+VERSION = 6
 API_ROLES = ('anon', 'authenticated', 'service_role')
 
 
@@ -104,7 +104,7 @@ def lock_and_check_empty_v4(connection, private, existing):
     Never trust a prior read-only observation or rows hidden by RLS.
     Older versions and unexpected/partial schemas still require a backup.
     """
-    legacy = {table.name for table in private.sorted_tables} - {'email_accounts'}
+    legacy = {table.name for table in private.sorted_tables} - {'email_accounts', 'gemini_calls'}
     if existing != legacy | {'smartspend_schema'}:
         return False
     connection.execute(text("SET LOCAL lock_timeout = '10s'"))
@@ -147,7 +147,7 @@ def migrate_postgres(engine, metadata):
                 raise DatabasePolicyError('unversioned_schema')
             if 'smartspend_schema' in existing:
                 versions = connection.execute(text('SELECT version FROM smartspend.smartspend_schema')).scalars().all()
-                if versions not in ([2], [3], [4], [5]):
+                if versions not in ([2], [3], [4], [5], [6]):
                     raise DatabasePolicyError('schema_version')
                 if versions != [VERSION] and os.getenv('POSTGRES_BACKUP_CONFIRMED') != 'true':
                     if versions != [4] or not lock_and_check_empty_v4(connection, private, existing):
@@ -155,8 +155,8 @@ def migrate_postgres(engine, metadata):
             # Only this dedicated schema is affected. Supabase-managed schemas stay untouched.
             private.create_all(connection)
             connection.execute(text('CREATE TABLE IF NOT EXISTS smartspend.smartspend_schema (version INTEGER PRIMARY KEY)'))
-            connection.execute(text('DELETE FROM smartspend.smartspend_schema WHERE version < 5'))
-            connection.execute(text('INSERT INTO smartspend.smartspend_schema VALUES (5) ON CONFLICT DO NOTHING'))
+            connection.execute(text('DELETE FROM smartspend.smartspend_schema WHERE version < 6'))
+            connection.execute(text('INSERT INTO smartspend.smartspend_schema VALUES (6) ON CONFLICT DO NOTHING'))
             roles = connection.execute(text("SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')")).scalars().all()
             grantees = 'PUBLIC' + ''.join(', "' + role + '"' for role in roles)
             connection.execute(text('REVOKE ALL ON SCHEMA smartspend FROM ' + grantees))

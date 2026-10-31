@@ -129,7 +129,7 @@ class EmailAuthTests(unittest.TestCase):
             engine = create_engine('sqlite:///' + path.as_posix())
             old = MetaData()
             for table in Base.metadata.sorted_tables:
-                if table.name != 'email_accounts': table.to_metadata(old)
+                if table.name not in {'email_accounts', 'gemini_calls'}: table.to_metadata(old)
             old.create_all(engine)
             with engine.begin() as connection:
                 connection.execute(text("INSERT INTO users (id,name,monthly_income) VALUES (77,'same name',12345)"))
@@ -140,7 +140,7 @@ class EmailAuthTests(unittest.TestCase):
                 before = {t.name: connection.execute(t.select()).fetchall() for t in old.sorted_tables}
             migrate(engine, Base.metadata); migrate(engine, Base.metadata)
             with engine.connect() as connection:
-                self.assertEqual(connection.exec_driver_sql('PRAGMA user_version').scalar(), 5)
+                self.assertEqual(connection.exec_driver_sql('PRAGMA user_version').scalar(), 6)
                 for table in old.sorted_tables: self.assertEqual(before[table.name], connection.execute(table.select()).fetchall())
                 self.assertEqual(connection.execute(text('SELECT count(*) FROM email_accounts')).scalar(), 0)
             backups = list(path.parent.glob('*.backup-*'))

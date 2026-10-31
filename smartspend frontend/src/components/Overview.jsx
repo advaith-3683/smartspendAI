@@ -1,9 +1,21 @@
 import React from 'react'
 import Icon from './Icon.jsx'
+import BurnAlertBanner from './BurnAlertBanner.jsx'
+import HomeVoiceEntry from './HomeVoiceEntry.jsx'
 import { formatMoney as format, toMinor as cents } from '../money.js'
 
+function FinancialOverview({ user, actual, projected, loaded, loading, error }) {
+  return <section className="card financial-overview" aria-label="Financial overview" aria-busy={loading}>
+    <div className="panel-heading"><div><h2>Financial overview</h2><p>Your selected month, in perspective.</p></div><span className="neutral-badge">INR</span></div>
+    {!loaded ? error ? <p className="empty-note">Your financial overview is unavailable. Use Retry above.</p> : <div className="summary-skeleton" role="status" aria-label="Loading financial overview"><span /><span /><span /><span /></div> : <div className="overview-metrics">{[
+      ['Monthly income', cents(user.monthly_income), 'budgets'], ['Actual spending', actual, 'transactions'], ['Remaining income', cents(user.monthly_income) - actual, 'planning'], ['Projected spending', projected, 'overview'],
+    ].map(([label, amount, icon]) => <div key={label}><span className="metric-icon"><Icon name={icon} /></span><p>{label}</p><strong>₹{format(amount / 100)}</strong></div>)}</div>}
+    <p className="panel-footnote">Actual spending includes entries dated through today. Projections combine budgeted pace with unbudgeted actuals; future entries stay in your ledger.</p>
+  </section>
+}
 
-export default function Overview({ user, pace, transactions, bills, loaded, loading, error, onSelect, onAdd }) {
+
+export default function Overview({ user, year, month, pace, transactions, bills, loaded, loading, error, onSelect, onAdd, onSaved }) {
   const today = new Date()
   const cutoff = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
   const incurred = transactions.filter(row => row.date <= cutoff)
@@ -13,13 +25,9 @@ export default function Overview({ user, pace, transactions, bills, loaded, load
   const projected = pace.reduce((sum, row) => sum + cents(row.projected_spend), 0) + incurred.filter(row => !budgeted.has(row.category)).reduce((sum, row) => sum + cents(row.amount), 0)
   const recent = [...transactions].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 5)
   return <div className="overview-layout">
-    <section className="card financial-overview" aria-label="Financial overview" aria-busy={loading}>
-      <div className="panel-heading"><div><h2>Financial overview</h2><p>Your selected month, in perspective.</p></div><span className="neutral-badge">INR</span></div>
-      {!loaded ? error ? <p className="empty-note">Your financial overview is unavailable. Use Retry above.</p> : <div className="summary-skeleton" role="status" aria-label="Loading financial overview"><span /><span /><span /><span /></div> : <div className="overview-metrics">{[
-        ['Monthly income', cents(user.monthly_income), 'budgets'], ['Actual spending', actual, 'transactions'], ['Remaining income', cents(user.monthly_income) - actual, 'planning'], ['Projected spending', projected, 'overview'],
-      ].map(([label, amount, icon]) => <div key={label}><span className="metric-icon"><Icon name={icon} /></span><p>{label}</p><strong>₹{format(amount / 100)}</strong></div>)}</div>}
-      <p className="panel-footnote">Actual spending includes entries dated through today. Projections combine budgeted pace with unbudgeted actuals; future entries stay in your ledger.</p>
-    </section>
+    {loaded && <BurnAlertBanner pace={pace} />}
+    <HomeVoiceEntry userId={user.id} year={year} month={month} onSaved={onSaved} />
+    <FinancialOverview user={user} actual={actual} projected={projected} loaded={loaded} loading={loading} error={error} />
     <div className="overview-columns"><section className="card spending-panel"><div className="panel-heading"><div><h2>Spending insights</h2><p>Where your money went this month.</p></div><Icon name="planning" /></div>
       {!loaded ? <div className="empty-note">{error ? 'Spending insights are unavailable.' : 'Loading your spending insights…'}</div> : categories.length ? <div className="category-breakdown">{categories.map(({ category, total }) => <div key={category}><div><span>{category}{!budgeted.has(category) && <small> · No budget</small>}</span><strong>₹{format(total / 100)}</strong></div><progress value={total} max={Math.max(actual, 1)} aria-label={`${category}: ${Math.round(total / actual * 100)} percent of actual spending`} /></div>)}</div> : <div className="empty-note"><Icon name="transactions" /><h3>A clear picture starts here</h3><p>Record your first expense to see your spending by category.</p><button className="btn secondary" onClick={onAdd}>Add a transaction <Icon name="right" /></button></div>}
     </section><section className="card coco-overview"><span className="section-icon"><Icon name="coach" /></span><span className="ai-badge">COCO · YOUR MONEY COACH</span><h2>A helpful place to start your money questions.</h2><p>Explore a spending pattern, think through a purchase, or find a practical next step.</p><button className="btn secondary" onClick={() => onSelect('coach')}>Talk to Coco <Icon name="right" /></button><small>Expense suggestions stay proposals until you choose Save.</small></section></div>

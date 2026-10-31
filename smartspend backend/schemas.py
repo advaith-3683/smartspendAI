@@ -1,7 +1,12 @@
 from datetime import date, datetime
 from typing import Optional
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator, Field
+from pydantic import BaseModel, ConfigDict, field_validator, Field
+
+MAX_MONEY_AMOUNT = Decimal("1000000000")
+MONEY_INCREMENT = Decimal("0.01")
+DEFAULT_TEXT_MAX_LENGTH = 100
+TEXT_MAX_LENGTHS = {"message": 4000, "raw_text": 100000, "note": 1000, "password": 128, "email": 254}
 
 
 class InputModel(BaseModel):
@@ -13,13 +18,13 @@ class InputModel(BaseModel):
         name = info.field_name
         if name in {"amount", "monthly_income", "monthly_limit", "item_cost", "target_amount"}:
             value = Decimal(str(value))
-            if not value.is_finite() or value > Decimal("1000000000") or value < 0 or (name != "monthly_income" and value == 0):
+            if not value.is_finite() or value > MAX_MONEY_AMOUNT or value < 0 or (name != "monthly_income" and value == 0):
                 raise ValueError("Money must be finite, positive (income may be zero), and at most 1 billion")
-            if value != value.quantize(Decimal("0.01")):
+            if value != value.quantize(MONEY_INCREMENT):
                 raise ValueError("Money allows at most two decimal places")
         if name in {"name", "category", "item_name", "message", "raw_text"} and not value:
             raise ValueError("Text must not be empty")
-        if isinstance(value, str) and len(value) > {"message": 4000, "raw_text": 100000, "note": 1000, "password": 128, "email": 254}.get(name, 100):
+        if isinstance(value, str) and len(value) > TEXT_MAX_LENGTHS.get(name, DEFAULT_TEXT_MAX_LENGTH):
             raise ValueError("Text exceeds allowed length")
         if name == "month" and value is not None and not 1 <= value <= 12:
             raise ValueError("Invalid month")

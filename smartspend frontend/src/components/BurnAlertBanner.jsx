@@ -1,51 +1,21 @@
 import React from 'react'
-
-function buildAlert(p) {
-  const { category, status, monthly_limit, spent_so_far, days_elapsed, days_in_month } = p
-
-  if (status !== 'over_budget' && status !== 'at_risk') return null
-
-  // Already actually overspent (not just projected)
-  if (spent_so_far > monthly_limit) {
-    const overBy = spent_so_far - monthly_limit
-    return {
-      category,
-      severity: 'bad',
-      message: `You've already gone ₹${overBy.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} over your ${category} budget with ${days_in_month - days_elapsed} days still left this month.`,
-    }
-  }
-
-  return {
-    category,
-    severity: 'warn',
-    message: `Your ${category} spending is projected at INR ${p.projected_spend.toLocaleString('en-IN', { maximumFractionDigits: 2 })} against a budget of INR ${monthly_limit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Monthly and one-time payments are counted once.`,
-  }
-}
+import Icon from './Icon.jsx'
+import { formatMoney } from '../money.js'
 
 export default function BurnAlertBanner({ pace }) {
-  const alerts = pace.map(buildAlert).filter(Boolean)
-  if (alerts.length === 0) return null
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
-      {alerts.map((a, i) => (
-        <div
-          key={i}
-          className={`buy-result ${a.severity === 'bad' ? 'warn' : 'ok'}`}
-          style={{
-            display: 'flex',
-            gap: 10,
-            alignItems: 'flex-start',
-            background: a.severity === 'bad' ? 'var(--status-bad-bg)' : 'var(--status-warn-bg)',
-            color: a.severity === 'bad' ? 'var(--status-bad)' : 'var(--status-warn)',
-          }}
-        >
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 14, letterSpacing: '0.06em', flexShrink: 0, marginTop: 2 }}>
-            ⏱ PACE
-          </span>
-          <span>{a.message}</span>
+  const alerts = pace.filter(row => row.status === 'over_budget' || row.status === 'at_risk')
+    .sort((a, b) => Number(b.status === 'over_budget') - Number(a.status === 'over_budget'))
+  if (!alerts.length) return null
+  return <section className="home-alerts" aria-label="Budget alerts" aria-live="polite">
+    <div className="panel-heading"><div><h2>Keep an eye on these</h2><p>Budget alerts for your selected month.</p></div><span className="neutral-badge">{alerts.length} {alerts.length === 1 ? 'alert' : 'alerts'}</span></div>
+    <div className="home-alert-grid">{alerts.map(row => {
+      const over = row.status === 'over_budget'
+      return <article className={`home-budget-alert ${over ? 'over-budget' : 'at-risk'}`} key={row.category}>
+        <Icon name="alert" /><div><div className="home-alert-heading"><strong>{row.category}</strong><span className={`status-pill ${row.status}`}>{over ? 'Over budget' : 'At risk'}</span></div>
+          <p>{over ? `You are INR ${formatMoney(Number(row.spent_so_far) - Number(row.monthly_limit))} over your budget.` : `Projected spending is INR ${formatMoney(row.projected_spend)} against a budget of INR ${formatMoney(row.monthly_limit)}.`}</p>
+          <small>Spent INR {formatMoney(row.spent_so_far)} · Budget INR {formatMoney(row.monthly_limit)}</small>
         </div>
-      ))}
-    </div>
-  )
+      </article>
+    })}</div>
+  </section>
 }

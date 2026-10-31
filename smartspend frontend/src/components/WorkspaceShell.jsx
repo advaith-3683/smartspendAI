@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import Icon from './Icon.jsx'
 import { Brand } from './design/Identity.jsx'
 
-const sections = [['overview', 'Overview'], ['transactions', 'Transactions'], ['budgets', 'Budgets & bills'], ['planning', 'Goals & insights'], ['coach', 'Coco'], ['settings', 'Account']]
+const sections = [['overview', 'Home'], ['transactions', 'Transactions'], ['budgets', 'Budgets & bills'], ['planning', 'Goals & insights'], ['coach', 'Coco'], ['settings', 'Account']]
 
 export default function WorkspaceShell({ user, activeView, onSelect, onLogout, loggingOut, children }) {
   const [open, setOpen] = useState(false)

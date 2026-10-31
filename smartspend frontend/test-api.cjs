@@ -52,14 +52,31 @@ async function main() {
     console.log('PASS readable validation errors')
 
     global.fetch = async () => { throw new TypeError('Failed to fetch') }
-    await assert.rejects(api.me(), error => error.code === 'network' && error.message === 'Cannot connect to SmartSpend. Retry shortly. If it continues, report the site address to support.')
+    await assert.rejects(api.me(), error => error.code === 'network' && error.status === undefined && error.path === '/auth/me' && /browser could not reach/.test(error.message))
     console.log('PASS actionable network errors')
 
     events.length = 0
     global.fetch = async () => new Response(JSON.stringify({ detail: 'Invalid username or password' }), { status: 401 })
-    await assert.rejects(api.login({ email: 'test@example.com', password: 'not-a-secret' }), error => error.status === 401)
+    await assert.rejects(api.login({ email: 'test@example.com', password: 'not-a-secret' }), error => error.status === 401 && error.code === 'authentication')
     assert.deepEqual(events, [])
     console.log('PASS failed login preserves form without a session-expiry event')
+
+    for (const [status, body, code] of [
+      [503, 'null', 'http'], [502, '<html>Bad gateway</html>', 'http'],
+      [403, '{"detail":"Origin not allowed"}', 'authorization'],
+      [422, '{"detail":[null,{}, {"msg":"Email required"}]}', 'validation'],
+      [429, '{"detail":"Rate limit exceeded"}', 'rate_limit'],
+    ]) {
+      global.fetch = async () => new Response(body, { status })
+      await assert.rejects(api.login({}), error => error.status === status && error.code === code && error.code !== 'network')
+    }
+    console.log('PASS null/malformed HTTP error bodies retain HTTP/auth/validation/rate-limit classifications')
+
+    global.fetch = async () => new Response('<html>Unexpected page</html>', { status: 200 })
+    await assert.rejects(api.me(), error => error.code === 'protocol' && error.status === 200)
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => { throw new TypeError('Response decoding failed') } })
+    await assert.rejects(api.me(), error => error.code === 'protocol' && error.status === 200)
+    console.log('PASS response decoding failures are not reported as connectivity failures')
 
     let finish
     global.fetch = () => new Promise(resolve => { finish = resolve })
@@ -94,7 +111,10 @@ async function main() {
       global.setTimeout = callback => { queueMicrotask(callback); return 0 }
       global.fetch = (_, options) => new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
       await assert.rejects(api.createTransaction({}), /too long.*Check your ledger/)
+      global.fetch = (_, options) => new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new TypeError('Aborted fetch'))))
+      await assert.rejects(api.me(), error => error.code === 'timeout' && /Retry sign-in/.test(error.message) && !/ledger/.test(error.message))
       console.log('PASS save timeout warns to inspect records before retrying')
+      console.log('PASS auth timeout is classified before an abort-related TypeError')
     } finally { global.setTimeout = originalTimeout }
   } finally {
     global.fetch = originalFetch

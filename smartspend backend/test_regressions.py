@@ -149,15 +149,18 @@ class Regressions(unittest.TestCase):
         self.assertEqual(self.call(client, f'/coach/chat/{uid}', {'message': 'x' * 4001})[0], 422)
         self.assertEqual(self.call(client, f'/savings-goal/{uid}', {'target_amount': 100, 'months': 2})[0], 200)
         self.assertEqual(self.call(client, f'/coach/digest/{uid}')[0], 200)
-        self.assertEqual(self.call(client, f'/coach/{uid}')[0], 503)
+        status, response, _ = self.call(client, f'/coach/{uid}')
+        self.assertEqual(status, 200)
+        self.assertIn('saved records', response['advice'])
     def test_ai_timeout_and_output_limits_without_network(self):
         from unittest.mock import patch, MagicMock
         import llm_coach
         model = MagicMock(); model.generate_content.return_value.text = 'x' * 10000
+        generate = model.generate_content
         with patch.object(llm_coach, '_ensure_configured'), patch.object(llm_coach, 'genai', MagicMock(GenerativeModel=MagicMock(return_value=model))):
-            self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [])), 8000)
-            kwargs = model.generate_content.call_args.kwargs
-            self.assertEqual(kwargs['request_options']['timeout'], 30)
+            self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [], reserve_call=MagicMock())), 8000)
+            kwargs = generate.call_args.kwargs
+            self.assertEqual(kwargs['request_options']['timeout'], 8)
             self.assertEqual(kwargs['generation_config']['max_output_tokens'], 1200)
     def test_logout_revokes_copied_cookie_and_route_coverage(self):
         client, uid = self.signup('revocation')
@@ -176,10 +179,14 @@ class Regressions(unittest.TestCase):
             kwargs['log_expense_fn'](amount=123, category='Food')
             raise ValueError('mock service failure')
         with patch.object(main.llm_coach, 'chat_reply', side_effect=fail):
-            self.assertEqual(self.call(client, f'/coach/chat/{uid}', {'message': 'Spent 123 on food'})[0], 502)
+            status, response, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'Spent 123 on food'})
+            self.assertEqual(status, 200)
+            self.assertEqual(response['proposed_expenses'], [])
+            self.assertIn('not recorded', response['reply'])
         with SessionLocal() as db:
             self.assertEqual(db.query(models.Transaction).filter_by(user_id=uid).count(), 0)
-            self.assertEqual(db.query(models.ChatMessage).filter_by(user_id=uid).count(), 0)
+            self.assertEqual(db.query(models.ExpenseProposal).filter_by(user_id=uid).count(), 0)
+            self.assertEqual(db.query(models.ChatMessage).filter_by(user_id=uid).count(), 2)
     def test_upload_limit(self):
         client, uid = self.signup('upload')
         boundary = 'smartspend-test-boundary'
@@ -187,6 +194,84 @@ class Regressions(unittest.TestCase):
         request = Request(self.base + '/ingest/statement', data=body, headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
         with self.assertRaises(HTTPError) as caught: client.open(request)
         self.assertEqual(caught.exception.code, 413); caught.exception.close()
+
+    def test_chat_provider_outages_preserve_summary_and_conversation(self):
+        from unittest.mock import patch
+        client, uid = self.signup('chat-outages')
+        self.call(client, '/transactions', {'user_id': uid, 'category': 'Food', 'amount': 25,
+                                           'date': date.today().isoformat()})
+        for error in (RuntimeError('missing AI configuration'), TimeoutError('503 overloaded'),
+                      ValueError('empty provider response')):
+            with patch.object(main.llm_coach, 'chat_reply', side_effect=error):
+                status, response, _ = self.call(client, f'/coach/chat/{uid}',
+                                                {'message': 'How much have I spent this month?'})
+            self.assertEqual(status, 200, response)
+            self.assertIn('25.00', response['reply'])
+            self.assertIn('49,975.00', response['reply'])
+            self.assertEqual(response['proposed_expenses'], [])
+        self.assertEqual(len(self.call(client, f'/coach/history/{uid}')[1]), 6)
+        self.assertEqual(len(self.call(client, f'/transactions/{uid}')[1]), 1)
+
+    def test_gemini_daily_quota_shared_across_features_and_owned_accounts(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        client, uid = self.signup('daily-quota')
+        other, oid = self.signup('other-quota')
+        requests = []
+        class Model:
+            def __init__(self, *args, **kwargs): pass
+            def generate_content(self, *args, **kwargs):
+                requests.append('Gemini'); return SimpleNamespace(text='Advice')
+            def start_chat(self, **kwargs):
+                return SimpleNamespace(send_message=self.generate_content)
+        with patch.object(main.llm_coach, '_ensure_configured'), patch.multiple(main.llm_coach,
+                genai=SimpleNamespace(GenerativeModel=Model), _unavailable_until={}):
+            self.assertEqual(self.call(other, f'/coach/{uid}')[0], 404)
+            self.assertEqual(self.call(client, f'/coach/chat/{uid}', {'message': 'Hello'})[0], 200)
+            self.assertEqual(self.call(client, f'/coach/{uid}')[0], 200)
+            self.assertEqual(self.call(client, f'/coach/digest/{uid}')[0], 200)
+            self.assertEqual(self.call(client, f'/savings-goal/{uid}', {'target_amount': 100, 'months': 2})[0], 200)
+            status, result, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'How much is left?'})
+            self.assertEqual(status, 200)
+            self.assertIn('four Gemini calls', result['reply'])
+            self.assertEqual(len(requests), 4)
+            self.assertEqual(self.call(other, f'/coach/{oid}')[0], 200)
+            self.assertEqual(len(requests), 5)
+            self.call(client, '/auth/logout', {}, 'POST')
+            self.assertEqual(self.call(client, '/auth/login', {'email': 'daily-quota@example.com', 'password': 'long-test-password'})[0], 200)
+            status, result, _ = self.call(client, f'/coach/{uid}')
+            self.assertEqual(status, 200)
+            self.assertIn('four Gemini calls', result['advice'])
+            self.assertEqual(len(requests), 5, 'Signing in again must not reset the account quota')
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.GeminiCall).filter_by(user_id=uid).count(), 4)
+
+    def test_quota_reservations_survive_chat_proposal_rollback(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        client, uid = self.signup('quota-rollback')
+        requests = []
+        class Model:
+            def __init__(self, *args, **kwargs): self.tools = kwargs.get('tools')
+            def generate_content(self, *args, **kwargs):
+                requests.append('Gemini'); return SimpleNamespace(text='Advice')
+            def start_chat(self, **kwargs):
+                def send(*args, **options):
+                    for _ in range(4): self.generate_content('history', **options)
+                    self.tools[0](25, 'Food')
+                    return self.generate_content('tool result', **options)
+                return SimpleNamespace(send_message=send)
+        with patch.object(main.llm_coach, '_ensure_configured'), patch.multiple(main.llm_coach,
+                genai=SimpleNamespace(GenerativeModel=Model), _unavailable_until={}):
+            status, result, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'I spent 25 on lunch'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['proposed_expenses'], [])
+        self.assertIn('four Gemini calls', result['reply'])
+        self.assertEqual(len(requests), 4)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.GeminiCall).filter_by(user_id=uid).count(), 4)
+            self.assertEqual(db.query(models.ExpenseProposal).filter_by(user_id=uid).count(), 0)
+            self.assertEqual(db.query(models.Transaction).filter_by(user_id=uid).count(), 0)
     def test_full_persistent_account_flow_and_isolation(self):
         from unittest.mock import patch
         client, uid = self.signup('persistent')
@@ -293,7 +378,7 @@ class Regressions(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool: list(pool.map(run, range(2)))
         with closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT monthly_income FROM users').fetchone()[0], 1234)
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 5)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 6)
         self.assertEqual(len(list(path.parent.glob(path.name + '.backup-*'))), 1)
     def test_failed_migration_rolls_back_money_conversion(self):
         from sqlalchemy import create_engine

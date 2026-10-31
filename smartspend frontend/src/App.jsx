@@ -14,7 +14,6 @@ import TransactionList from './components/TransactionList.jsx'
 import BuyDecision from './components/BuyDecision.jsx'
 import CoachPanel from './components/CoachPanel.jsx'
 import AnomalyBanner from './components/AnomalyBanner.jsx'
-import BurnAlertBanner from './components/BurnAlertBanner.jsx'
 import MonthNav from './components/MonthNav.jsx'
 import ImportPanel from './components/ImportPanel.jsx'
 import BillsPanel from './components/BillsPanel.jsx'
@@ -63,12 +62,13 @@ export default function App() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [retryingSession, setRetryingSession] = useState(false)
   const [transactionView, setTransactionView] = useState('ledger')
+  const [sessionFailure, setSessionFailure] = useState(null)
   const addTransaction = () => { setActiveView('transactions'); setTransactionView('entry') }
   useEffect(() => { if (activeView === 'transactions' && transactionView === 'entry') document.getElementById('txn-amount')?.focus() }, [activeView, transactionView])
   const retrySession = async () => {
     if (retryingSession) return
-    setRetryingSession(true); setLoadError('')
-    try { setUser(await api.me()) } catch (err) { if (err.status !== 401) setLoadError(err.message) }
+    setRetryingSession(true); setLoadError(''); setSessionFailure(null)
+    try { setUser(await api.me()) } catch (err) { if (err.status !== 401) setSessionFailure(err) }
     finally { setRetryingSession(false) }
   }
   const logout = async () => {
@@ -81,10 +81,10 @@ export default function App() {
 
   useEffect(() => {
     try { localStorage.removeItem('smartspend_user_id') } catch { /* Storage may be disabled; authentication uses cookies. */ }
-    const clear = event => { api.resetSession(); refreshVersion.current += 1; setUser(null); setTransactions([]); setPace([]); setAnomalies([]); setUpcomingBills([]); setLoadError(event?.detail?.expired ? 'Your session expired. Log in again to continue. Your saved records are safe.' : ''); setActiveView('overview'); setLoadingData(false); setHasLoaded(false) }
+    const clear = event => { api.resetSession(); refreshVersion.current += 1; setUser(null); setTransactions([]); setPace([]); setAnomalies([]); setUpcomingBills([]); setSessionFailure(null); setLoadError(event?.detail?.expired ? 'Your session expired. Log in again to continue. Your saved records are safe.' : ''); setActiveView('overview'); setLoadingData(false); setHasLoaded(false) }
     window.addEventListener('smartspend:logout', clear)
     let mounted = true
-    api.me().then(value => { if (mounted) setUser(value) }).catch(err => { if (mounted && err.status !== 401) setLoadError(err.message) }).finally(() => { if (mounted) setCheckingUser(false) })
+    api.me().then(value => { if (mounted) setUser(value) }).catch(err => { if (mounted && err.status !== 401) setSessionFailure(err) }).finally(() => { if (mounted) setCheckingUser(false) })
     return () => { mounted = false; api.resetSession(); window.removeEventListener('smartspend:logout', clear) }
   }, [])
 
@@ -125,7 +125,7 @@ export default function App() {
   }, [user?.id])
 
   if (checkingUser) return <main className="session-loading" role="status"><span className="brand-mark"><Icon name="budgets" /></span><h1>SmartSpend</h1><span className="spinner" /><p>Restoring your account...</p></main>
-  if (!user) return <AuthScreen sessionError={loadError} onRetrySession={retrySession} retryingSession={retryingSession} onCreated={value => { api.resetSession(); setLoadError(''); setUser(value) }} />
+  if (!user) return <AuthScreen sessionError={sessionFailure || loadError} onRetrySession={retrySession} retryingSession={retryingSession} onCreated={value => { api.resetSession(); setLoadError(''); setSessionFailure(null); setUser(value) }} />
 
   const categories = pace.map(p => p.category)
   const unbudgeted = [...new Set(transactions.filter(t => !categories.includes(t.category)).map(t => t.category))]
@@ -144,7 +144,7 @@ export default function App() {
       {activeView !== 'settings' && <div className="period-toolbar"><div><span className="toolbar-label">Selected period</span><MonthNav year={selectedYear} month={selectedMonth} onChange={(y, m) => { refreshVersion.current += 1; setHasLoaded(false); setPace([]); setTransactions([]); setAnomalies([]); setUpcomingBills([]); setSelectedYear(y); setSelectedMonth(m) }} /></div><button className="btn secondary" onClick={refreshData} type="button" disabled={loadingData}><Icon name="refresh" />{loadingData ? 'Refreshing...' : 'Refresh'}</button></div>}
       {loadError && <Notice title="Unable to refresh your records" action={<button className="text-button" onClick={refreshData}>Retry</button>}><p>{loadError}</p></Notice>}
       {loadingData && activeView !== 'overview' && <p className="loading-records" role="status"><span className="spinner" />Loading your saved records...</p>}
-      {activeView === 'overview' && <Overview user={user} pace={pace} transactions={transactions} bills={upcomingBills} loaded={hasLoaded} loading={loadingData} error={loadError} onSelect={selectView} onAdd={addTransaction} />}
+      {activeView === 'overview' && <Overview key={`${user.id}-${selectedYear}-${selectedMonth}`} user={user} year={selectedYear} month={selectedMonth} pace={pace} transactions={transactions} bills={upcomingBills} loaded={hasLoaded} loading={loadingData} error={loadError} onSelect={selectView} onAdd={addTransaction} onSaved={refreshData} />}
 
       <div hidden={activeView !== 'transactions'} className="page-sections">
         <nav className="page-tabs" aria-label="Transaction workspace">{[['ledger', 'Your ledger'], ['entry', 'Add expense'], ['import', 'Import transactions']].map(([id, label]) => <button key={id} type="button" aria-pressed={transactionView === id} className={transactionView === id ? 'active' : ''} onClick={() => setTransactionView(id)}>{label}</button>)}</nav>
@@ -154,7 +154,7 @@ export default function App() {
       </div>
 
       <div hidden={activeView !== 'budgets'} className="page-sections">
-        <section><div className="section-heading"><span className="section-icon"><Icon name="budgets" /></span><div><h2>Your category budgets</h2><p>Actual spending and projected pace for the selected month.</p></div></div><BurnAlertBanner pace={pace} />{!hasLoaded ? <div className="empty-note">{loadError ? 'Budget information is unavailable.' : 'Loading saved budgets...'}</div> : pace.length ? <div className="budget-grid">{pace.map(p => <BudgetCard key={p.category} pace={p} />)}</div> : <div className="empty-note"><h3>Give your month a plan</h3><p>Add your first category budget below.</p></div>}</section>
+        <section><div className="section-heading"><span className="section-icon"><Icon name="budgets" /></span><div><h2>Your category budgets</h2><p>Actual spending and projected pace for the selected month.</p></div></div>{!hasLoaded ? <div className="empty-note">{loadError ? 'Budget information is unavailable.' : 'Loading saved budgets...'}</div> : pace.length ? <div className="budget-grid">{pace.map(p => <BudgetCard key={p.category} pace={p} />)}</div> : <div className="empty-note"><h3>Give your month a plan</h3><p>Add your first category budget below.</p></div>}</section>
         <section className="form-layout"><div className="form-description"><span className="section-icon"><Icon name="planning" /></span><h2>Set a category budget</h2><p>Choose a monthly limit. Saving an existing category updates that month's budget.</p></div><BudgetForm key={`${user.id}-${selectedYear}-${selectedMonth}`} onSubmit={data => api.createBudget({ user_id: user.id, year: selectedYear, month: selectedMonth, ...data }).then(refreshData)} /></section>
         <section><div className="section-heading"><span className="section-icon"><Icon name="calendar" /></span><div><h2>Recurring bills</h2><p>Keep due dates, paid status and payment expenses together.</p></div></div><BillsPanel key={`${user.id}-${selectedYear}-${selectedMonth}`} userId={user.id} year={selectedYear} month={selectedMonth} onChange={refreshData} /></section>
       </div>

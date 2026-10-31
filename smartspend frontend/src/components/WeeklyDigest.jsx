@@ -80,7 +80,7 @@ export default function WeeklyDigest({ userId }) {
               <div style={{ fontSize: 14, color: 'var(--ink-faint)', marginBottom: 6 }}>OVERDUE AND UPCOMING BILLS</div>
               {digest.bills_due_soon.map((b) => (
                 <div key={`${b.id}-${b.due_date}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}>
-                  <span>{b.name} ? {b.due_date} ? {b.status}</span>
+                  <span>{b.name} · {b.due_date} · {b.status}</span>
                   <span className="amount">₹{b.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
               ))}

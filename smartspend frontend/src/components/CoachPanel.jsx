@@ -27,9 +27,6 @@ function TypingDots() {
   )
 }
 
-const SpeechRecognitionAPI =
-  typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null
-const SPEECH_SUPPORTED = !!SpeechRecognitionAPI
 const VOICE_OUTPUT_SUPPORTED = typeof window !== 'undefined' && !!window.speechSynthesis
 
 export default function CoachPanel({ userId, year, month, onExpenseLogged, active = true }) {
@@ -46,12 +43,9 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
   const [loading, setLoading] = useState(false)
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const [error, setError] = useState('')
-  const [listening, setListening] = useState(false)
   const [voiceOutput, setVoiceOutput] = useState(false)
   const scrollRef = useRef(null)
-  const recognitionRef = useRef(null)
   const voiceOutputRef = useRef(false)
-  const transcriptRef = useRef('')
 
   useEffect(() => {
     voiceOutputRef.current = voiceOutput
@@ -68,35 +62,6 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
     try { window.speechSynthesis.speak(utterance) } catch { setError('Voice playback unavailable. Read the reply below.') }
   }
 
-  useEffect(() => {
-    if (!SPEECH_SUPPORTED) return
-    const recognition = new SpeechRecognitionAPI()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'en-IN'
-
-    recognition.onresult = (event) => {
-      let finalChunk = ''
-      let interimChunk = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const chunk = event.results[i][0].transcript
-        if (event.results[i].isFinal) finalChunk += chunk + ' '
-        else interimChunk += chunk
-      }
-      if (finalChunk) transcriptRef.current = (transcriptRef.current + ' ' + finalChunk).trim()
-      setInput((transcriptRef.current + ' ' + interimChunk).trim())
-    }
-    recognition.onerror = event => { transcriptRef.current = ''; setListening(false); setError(event.error === 'not-allowed' ? 'Microphone access denied. Allow microphone access in browser settings, or type your message.' : 'Speech recognition failed. Check your microphone and connection, or type your message.') }
-    recognition.onend = () => {
-      setListening(false)
-      const finalText = transcriptRef.current.trim()
-      transcriptRef.current = ''
-      if (finalText) setInput(finalText)
-    }
-
-    recognitionRef.current = recognition
-    return () => { recognition.onend = null; recognition.abort() }
-  }, [])
 
   useEffect(() => {
     return () => {
@@ -105,6 +70,7 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
   }, [])
 
   useEffect(() => {
+    if (!active) return
     let live = true
     setHistoryLoaded(false)
     setError('')
@@ -117,7 +83,7 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
       })
       .catch(err => { if (live) setError(`Could not load your saved conversation: ${err.message}`) })
     return () => { live = false }
-  }, [userId, retryHistory])
+  }, [userId, retryHistory, active])
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -127,9 +93,6 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
 
   useEffect(() => {
     if (!active) {
-      transcriptRef.current = ''
-      recognitionRef.current?.abort()
-      setListening(false)
       setVoiceOutput(false)
       if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
     }
@@ -139,7 +102,6 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
     const trimmed = text.trim()
     if (!trimmed || sending.current || !active || !historyLoaded) return
     sending.current = true
-    transcriptRef.current = ''; recognitionRef.current?.abort(); setListening(false)
 
     setError('')
     setMessages((prev) => [...prev, { role: 'user', content: trimmed }])
@@ -181,24 +143,6 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
       setNotice('Saved conversation deleted.')
     } catch (err) { setError(err.message) }
     finally { sending.current = false; setLoading(false) }
-  }
-
-  const toggleListening = () => {
-    if (!SPEECH_SUPPORTED || !recognitionRef.current || loading) return
-    if (listening) {
-      recognitionRef.current.stop()
-    } else {
-      if (VOICE_OUTPUT_SUPPORTED) window.speechSynthesis.cancel()
-      transcriptRef.current = ''
-      setInput('')
-      setListening(true)
-      try { recognitionRef.current.start() } catch { setListening(false); setError('Could not start microphone. Try again or type your message.') }
-    }
-  }
-
-  const handleCocoFabTap = () => {
-    if (VOICE_OUTPUT_SUPPORTED) setVoiceOutput(true)
-    toggleListening()
   }
 
   const hasChatted = messages.some((m) => m.role === 'user')
@@ -257,8 +201,7 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
       )}
 
       {!historyLoaded && !error && <p role="status">Loading saved conversation...</p>}
-      {!SPEECH_SUPPORTED && <p className="period-note">Voice input is unavailable in this browser. Type your message or use a browser with speech recognition.</p>}
-      <p className="period-note">Review dictated text, then press Send.</p>
+      <p className="period-note">Use the microphone on Home for voice expenses, or type a message here.</p>
       {error && <div role="alert" className="buy-result warn" style={{ marginTop: 12 }}>{error}{!historyLoaded && <button className="btn secondary" onClick={() => setRetryHistory(n => n + 1)}>Retry conversation</button>}</div>}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
@@ -284,23 +227,9 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
           maxLength={4000}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={listening ? 'Listening...' : 'Ask Coco about your budget...'}
+          placeholder="Ask Coco about your budget..."
           disabled={loading || !historyLoaded}
         />
-        {SPEECH_SUPPORTED && (
-          <button
-            type="button"
-            className={`btn secondary chat-send${listening ? ' listening' : ''}`}
-            onClick={toggleListening}
-            aria-pressed={listening}
-            disabled={loading || !historyLoaded}
-            aria-label={listening ? 'Stop listening' : 'Speak to Coco'}
-            title={listening ? 'Stop listening' : 'Speak your question to Coco'}
-            style={listening ? { background: 'var(--accent)', color: 'var(--on-accent)' } : undefined}
-          >
-            <Icon name="microphone" />{listening ? 'Stop' : 'Speak'}
-          </button>
-        )}
         <button className="btn chat-send" type="submit" disabled={loading || !historyLoaded || !input.trim()}>
           {loading ? '...' : 'Send'}
         </button>
@@ -318,46 +247,7 @@ export default function CoachPanel({ userId, year, month, onExpenseLogged, activ
       </form>
       <p className="composer-hint">Enter to send | Shift + Enter for a new line <span>{input.length}/4000</span></p>
 
-      {SPEECH_SUPPORTED && (
-        <button
-          type="button"
-          className={`coco-fab${listening ? ' listening' : ''}`}
-          onClick={handleCocoFabTap}
-          disabled={loading || !historyLoaded}
-          aria-label={listening ? 'Stop dictation and review' : 'Talk to Coco'}
-          title={listening ? 'Tap to stop and review' : 'Tap to talk to Coco'}
-        >
-          <span className="coco-fab-ring" aria-hidden="true" />
-          {listening ? (
-            <span className="coco-fab-dot" aria-hidden="true" />
-          ) : (
-            <svg
-              className="coco-fab-icon"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M19 11a7 7 0 0 1-14 0M12 18v3"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          )}
-          <span className="coco-fab-label">{listening ? 'STOP' : 'COCO'}</span>
-        </button>
-      )}
+
     </div>
   )
 }

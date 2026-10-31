@@ -5,7 +5,7 @@ const Module = require('node:module')
 const assert = require('node:assert/strict')
 const React = require('react')
 const { renderToString } = require('react-dom/server')
-const bundle = buildSync({ entryPoints: [resolve('src/components/Overview.jsx')], bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external' }).outputFiles[0].text
+const bundle = buildSync({ entryPoints: [resolve('src/components/Overview.jsx')], bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external', define: { 'import.meta.env': '{}' } }).outputFiles[0].text
 const mod = new Module(resolve('overview.generated.cjs'), module)
 mod.filename = resolve('overview.generated.cjs'); mod.paths = module.paths; mod._compile(bundle, mod.filename)
 const base = { user: { name: 'Isolated Fixture', monthly_income: 1000.15 }, pace: [{ category: 'Food', projected_spend: 10.1 }],
@@ -37,3 +37,10 @@ const loading = render({ loaded: false, loading: true })
 assert.ok(loading.includes('role="status"') && loading.includes('summary-skeleton'))
 assert.ok(!loading.includes('overview-metrics'))
 console.log('PASS loading state presents placeholders rather than fake balances')
+const alerts = render({ pace: [{ category: 'Food', status: 'at_risk', spent_so_far: 80, monthly_limit: 100, projected_spend: 120 },
+  { category: 'Shopping', status: 'over_budget', spent_so_far: 150, monthly_limit: 100, projected_spend: 150 }] })
+assert.ok(alerts.includes('aria-label="Budget alerts"'))
+assert.ok(alerts.includes('At risk') && alerts.includes('Over budget'))
+assert.ok(alerts.indexOf('Budget alerts') < alerts.indexOf('Financial overview'))
+assert.ok(alerts.includes('Start recording for Coco'))
+console.log('PASS Home shows budget alerts before financial overview and includes voice entry')

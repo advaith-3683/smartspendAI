@@ -20,7 +20,7 @@ BEGIN
         RAISE EXCEPTION 'Application schema incomplete; emptiness not certified';
     END IF;
     SELECT array_agg(version ORDER BY version) INTO versions FROM smartspend.smartspend_schema;
-    IF versions IS DISTINCT FROM ARRAY[4] AND versions IS DISTINCT FROM ARRAY[5] THEN
+    IF versions IS DISTINCT FROM ARRAY[4] AND versions IS DISTINCT FROM ARRAY[5] AND versions IS DISTINCT FROM ARRAY[6] THEN
         RAISE EXCEPTION 'Unexpected schema version; emptiness not certified';
     END IF;
     FOR relation IN
