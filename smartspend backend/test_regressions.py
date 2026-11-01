@@ -151,7 +151,24 @@ class Regressions(unittest.TestCase):
         self.assertEqual(self.call(client, f'/coach/digest/{uid}')[0], 200)
         status, response, _ = self.call(client, f'/coach/{uid}')
         self.assertEqual(status, 200)
-        self.assertIn('saved records', response['advice'])
+        self.assertIn('no transactions or budgets recorded', response['advice'])
+    def test_new_account_chat_distinguishes_ai_outage_from_quota(self):
+        from unittest.mock import patch
+        from ai_quota import GeminiDailyLimitReached
+        client, uid = self.signup('freshcoco')
+        for error, expected in (
+            (RuntimeError('provider unavailable'), "Coco's AI is temporarily unavailable"),
+            (GeminiDailyLimitReached(datetime(2026, 11, 2)), 'four Gemini calls'),
+        ):
+            with patch.object(main.llm_coach, 'chat_reply', side_effect=error):
+                status, body, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'Hello'})
+            self.assertEqual(status, 200)
+            self.assertIn(expected, body['reply'])
+            self.assertIn('no transactions or budgets recorded', body['reply'])
+            self.assertNotIn('Using your saved records', body['reply'])
+            if not isinstance(error, GeminiDailyLimitReached):
+                self.assertNotIn('four Gemini calls', body['reply'])
+            self.assertEqual(body['proposed_expenses'], [])
     def test_ai_timeout_and_output_limits_without_network(self):
         from unittest.mock import patch, MagicMock
         import llm_coach
@@ -160,7 +177,7 @@ class Regressions(unittest.TestCase):
         with patch.object(llm_coach, '_ensure_configured'), patch.object(llm_coach, 'genai', MagicMock(GenerativeModel=MagicMock(return_value=model))):
             self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [], reserve_call=MagicMock())), 8000)
             kwargs = generate.call_args.kwargs
-            self.assertEqual(kwargs['request_options']['timeout'], 8)
+            self.assertEqual(kwargs['request_options']['timeout'], 20)
             self.assertEqual(kwargs['generation_config']['max_output_tokens'], 1200)
     def test_logout_revokes_copied_cookie_and_route_coverage(self):
         client, uid = self.signup('revocation')

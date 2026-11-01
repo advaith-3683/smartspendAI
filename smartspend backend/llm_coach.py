@@ -8,10 +8,10 @@ from startup_telemetry import startup_stage
 from ai_quota import GeminiDailyLimitReached
 
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or '').strip()
-MODEL_NAME = (os.getenv("GEMINI_MODEL") or 'gemini-flash-latest').strip() or 'gemini-flash-latest'
+MODEL_NAME = (os.getenv("GEMINI_MODEL") or 'gemini-flash-lite-latest').strip() or 'gemini-flash-lite-latest'
 GENERATION_CONFIG = {"max_output_tokens": 1200}
-REQUEST_OPTIONS = {"timeout": 8, "retry": None}
-FALLBACK_MODEL = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite').strip()
+REQUEST_OPTIONS = {"timeout": 20, "retry": None}
+FALLBACK_MODEL = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-flash-latest').strip()
 _unavailable_until = {}
 _provider_lock = threading.Lock()
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _generate(operation, can_retry=lambda: True):
             raise
         except Exception as error:
             last_error = error
-            logger.warning('Coco provider attempt failed: %s', type(error).__name__)
+            logger.warning('Coco provider attempt failed: model=%s error=%s', name, type(error).__name__)
             with _provider_lock:
                 _unavailable_until[name] = time.monotonic() + 30
             if not can_retry():
@@ -66,7 +66,9 @@ def _metered_model(name, reserve_call, **kwargs):
 
 def quota_notice(error):
     if isinstance(error, GeminiDailyLimitReached):
-        return 'Your account has used its four Gemini calls in the last 24 hours. Saved-record guidance remains available until a call slot opens. '
+        return ('Your account has used its four Gemini calls in the last 24 hours '
+                '(including failed requests and tool follow-up calls). '
+                'Basic guidance remains available until a call slot opens. ')
     return ''
 
 
@@ -74,7 +76,9 @@ def recorded_guidance(user_name, monthly_income, pace_data, total_spent=None,
                       remaining=None, recent_transactions=None, message=''):
     """Useful, explicit non-generative guidance; never invent facts or save expenses."""
     text = message.lower()
-    prefix = 'Using your saved records: '
+    has_records = total_spent is None or bool(pace_data or recent_transactions or total_spent)
+    prefix = ('Using your saved records: ' if has_records else
+              'You have no transactions or budgets recorded for the selected month yet. ')
     if re.search(r'^\s*(?:i|we)\s+(?:just\s+)?(?:spent|paid|bought)\b|^\s*(?:log|record|add)\b|^\s*(?:spent|paid)\s+\d', text):
         return (prefix + 'use Add transaction to enter the amount, category and date, then save it. '
                 'I have not recorded an expense from this message.')
@@ -84,7 +88,7 @@ def recorded_guidance(user_name, monthly_income, pace_data, total_spent=None,
                 'review category budgets on day 6; and compare your recorded spending on day 7. '
                 'Keep essential bills covered throughout.')
     lines = []
-    if total_spent is not None:
+    if total_spent is not None and has_records:
         lines.append(f'You have recorded INR {total_spent:,.2f} in spending for the selected month, '
                      f'with INR {remaining:,.2f} of your monthly income remaining.')
     if any(word in text for word in ('biggest', 'largest', 'most')) and recent_transactions:
@@ -102,7 +106,8 @@ def recorded_guidance(user_name, monthly_income, pace_data, total_spent=None,
         lines.append('Set category budgets to compare your spending with a monthly plan.')
     if any(word in text for word in ('save', 'saving', 'advice')) or total_spent is None:
         lines.append('Protect essential bills, review optional spending, and use Goals & insights for a savings plan based on your history.')
-    lines.append('This is a summary of saved records; free-form AI advice will resume when available.')
+    lines.append('This is a summary of saved records; free-form AI advice will resume when available.'
+                 if has_records else 'Add a transaction or set a budget to get started.')
     return prefix + ' '.join(lines)
 
 

@@ -507,7 +507,8 @@ def coach_chat(
         proposed_expenses.clear()
         reply = llm_coach.recorded_guidance(user.name, user.monthly_income, pace_data,
                                            total_spent, remaining, recent_transactions, req.message)
-        reply = llm_coach.quota_notice(e) + reply
+        reply = (llm_coach.quota_notice(e) or
+                 'Coco\'s AI is temporarily unavailable. This is basic guidance, not an AI reply. ') + reply
 
     db.add(models.ChatMessage(user_id=user_id, role="user", content=req.message))
     db.add(models.ChatMessage(user_id=user_id, role="model", content=reply))

@@ -111,6 +111,29 @@ class GeminiQuotaTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): llm_coach._metered_model('primary', None)
             sdk.GenerativeModel.assert_not_called()
 
+    def test_new_account_can_chat_after_another_account_exhausts_quota(self):
+        requests = []
+        class Model:
+            def __init__(self, name, **kwargs): pass
+            def generate_content(self, *args, **kwargs):
+                requests.append('request')
+                return SimpleNamespace(text='Hello from Coco')
+            def start_chat(self, **kwargs):
+                return SimpleNamespace(send_message=self.generate_content)
+        for _ in range(4): self.reserve()
+        with patch.object(llm_coach, '_ensure_configured'), patch.multiple(llm_coach,
+                genai=SimpleNamespace(GenerativeModel=Model), _unavailable_until={}):
+            with self.assertRaises(GeminiDailyLimitReached):
+                llm_coach.chat_reply('First', 1000, [], 0, 1000, [], [], 'Hello', reserve_call=self.reserve)
+            for _ in range(4):
+                reply = llm_coach.chat_reply('Second', 1000, [], 0, 1000, [], [], 'Hello',
+                                            reserve_call=lambda: self.reserve(self.other))
+                self.assertEqual(reply, 'Hello from Coco')
+            with self.assertRaises(GeminiDailyLimitReached):
+                llm_coach.chat_reply('Second', 1000, [], 0, 1000, [], [], 'Hello',
+                                     reserve_call=lambda: self.reserve(self.other))
+        self.assertEqual(len(requests), 4)
+
     def test_missing_ai_configuration_does_not_consume_quota(self):
         with patch.object(llm_coach, 'GEMINI_API_KEY', ''):
             with self.assertRaises(RuntimeError):
