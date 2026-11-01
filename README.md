@@ -75,7 +75,7 @@ Weekly digest totals exclude `monthly` recurring payments and say so. A zero pri
 
 ## Imports and AI limits
 
-Gemini is limited to **four provider requests per account in any rolling 24 hours**, shared by chat (including Home voice), coaching advice, weekly narration and savings narration. Failed attempts, fallback models and automatic expense-tool follow-up requests each count. Reservations commit before provider access and survive chat failure, logout and server restarts; database locks prevent concurrent requests from exceeding four. Missing AI configuration and saved-record guidance do not consume calls. At the limit, deterministic guidance and core expense tracking remain available. Schema version 6 adds the private `gemini_calls` table; see the schema-6 deployment note in DEPLOYMENT.md before upgrading hosted storage.
+Coco has no application-enforced daily call limit. Provider-side quotas and temporary AI outages can still apply. The legacy schema-6 `gemini_calls` table is retained for compatibility and is no longer used to meter calls.
 
 Explicit debit/withdrawal columns take precedence over generic amounts; credit/deposit/balance columns cannot become debit columns. Generic negative signed amounts are expenses; positives are skipped. Explicit DR/debit/withdrawal/expense types import, while CR/credit/deposit/income types do not. Ambiguous unsigned rows are skipped. Review bank conventions before committing.
 

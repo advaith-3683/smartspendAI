@@ -59,7 +59,7 @@ class AIResilienceTests(unittest.TestCase):
         sdk.GenerativeModel.side_effect = make_model
         with patch.object(llm_coach, 'genai', sdk), self.assertRaises(RuntimeError):
             llm_coach.chat_reply('Test', 1000, [], 0, 1000, [], [], 'I spent 25 on lunch',
-                                 log_expense_fn=proposal, reserve_call=MagicMock())
+                                 log_expense_fn=proposal)
         proposal.assert_called_once()
         self.assertEqual(sdk.GenerativeModel.call_count, 1)
 

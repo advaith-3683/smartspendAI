@@ -20,7 +20,6 @@ import models
 import schemas
 import services
 import llm_coach
-from ai_quota import quota_for_user
 import ingestion
 from database import engine, get_db, Base
 from utils import normalize_category
@@ -372,14 +371,13 @@ def get_coaching(user_id: int, year: int = None, month: int = None, db: Session 
     pace_data = _get_pace_data(db, user_id, target_year, target_month)
 
     try:
-        advice = llm_coach.get_coaching_advice(user.name, user.monthly_income, pace_data, reserve_call=quota_for_user(user_id))
+        advice = llm_coach.get_coaching_advice(user.name, user.monthly_income, pace_data)
     except Exception as e:
         llm_coach.logger.warning('Coco advice fallback: %s', type(e).__name__)
         txns = _get_month_transactions(db, user_id, target_year, target_month)
         spent = sum(t.amount for t in txns)
         advice = llm_coach.recorded_guidance(user.name, user.monthly_income, pace_data,
                                             spent, user.monthly_income - spent)
-        advice = llm_coach.quota_notice(e) + advice
 
     return {"advice": advice}
 
@@ -497,7 +495,6 @@ def coach_chat(
             anomalies,
             subscriptions,
             log_expense_fn=log_expense,
-            reserve_call=quota_for_user(user_id),
         )
     except Exception as e:
         llm_coach.logger.warning('Coco chat fallback: %s', type(e).__name__)
@@ -507,8 +504,7 @@ def coach_chat(
         proposed_expenses.clear()
         reply = llm_coach.recorded_guidance(user.name, user.monthly_income, pace_data,
                                            total_spent, remaining, recent_transactions, req.message)
-        reply = (llm_coach.quota_notice(e) or
-                 'Coco\'s AI is temporarily unavailable. This is basic guidance, not an AI reply. ') + reply
+        reply = 'Coco\'s AI is temporarily unavailable. This is basic guidance, not an AI reply. ' + reply
 
     db.add(models.ChatMessage(user_id=user_id, role="user", content=req.message))
     db.add(models.ChatMessage(user_id=user_id, role="model", content=reply))
@@ -570,13 +566,12 @@ def get_weekly_digest(user_id: int, db: Session = Depends(get_db)):
     digest = services.get_weekly_digest_data(db, user_id)
 
     try:
-        digest_text = llm_coach.get_weekly_digest(user.name, digest, reserve_call=quota_for_user(user_id))
+        digest_text = llm_coach.get_weekly_digest(user.name, digest)
     except Exception as error:
         llm_coach.logger.warning('Coco digest fallback: %s', type(error).__name__)
         digest_text = (f"Your recorded non-monthly spending this week is INR {digest['total_this_week']:,.2f}, "
                        f"compared with INR {digest['total_last_week']:,.2f} last week. "
                        "Monthly recurring payments are excluded. Review the breakdown below and choose one optional expense to reduce.")
-        digest_text = llm_coach.quota_notice(error) + digest_text
 
     return {**digest, "digest_text": digest_text}
 
@@ -603,11 +598,10 @@ def savings_goal(user_id: int, req: schemas.SavingsGoalRequest, db: Session = De
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        advice = llm_coach.get_goal_advice(user.name, plan, reserve_call=quota_for_user(user_id))
+        advice = llm_coach.get_goal_advice(user.name, plan)
     except Exception as error:
         llm_coach.logger.warning('Coco savings fallback: %s', type(error).__name__)
         advice = "Based on your saved spending history: " + ("The recorded baseline supports this goal within the stated discretionary cuts." if plan["achievable"] else "This goal is not supported by reliable history and reasonable discretionary cuts. Extend the timeline or review income and missing records; fixed costs are protected.")
-        advice = llm_coach.quota_notice(error) + advice
 
     return {**plan, "advice": advice}
 

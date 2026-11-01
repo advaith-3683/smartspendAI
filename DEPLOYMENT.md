@@ -1,3 +1,7 @@
+# Daily AI limit removed
+
+Coco no longer enforces a per-account daily Gemini call limit. No database migration or usage reset is required; existing schema-6 tables remain compatible. The following schema-6 rollout notes are historical.
+
 # Supabase PostgreSQL + Render + Vercel setup
 
 ## Gemini account quota: schema 6 (not deployed)

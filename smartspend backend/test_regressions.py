@@ -152,30 +152,23 @@ class Regressions(unittest.TestCase):
         status, response, _ = self.call(client, f'/coach/{uid}')
         self.assertEqual(status, 200)
         self.assertIn('no transactions or budgets recorded', response['advice'])
-    def test_new_account_chat_distinguishes_ai_outage_from_quota(self):
+    def test_new_account_chat_labels_ai_outage(self):
         from unittest.mock import patch
-        from ai_quota import GeminiDailyLimitReached
         client, uid = self.signup('freshcoco')
-        for error, expected in (
-            (RuntimeError('provider unavailable'), "Coco's AI is temporarily unavailable"),
-            (GeminiDailyLimitReached(datetime(2026, 11, 2)), 'four Gemini calls'),
-        ):
-            with patch.object(main.llm_coach, 'chat_reply', side_effect=error):
-                status, body, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'Hello'})
-            self.assertEqual(status, 200)
-            self.assertIn(expected, body['reply'])
-            self.assertIn('no transactions or budgets recorded', body['reply'])
-            self.assertNotIn('Using your saved records', body['reply'])
-            if not isinstance(error, GeminiDailyLimitReached):
-                self.assertNotIn('four Gemini calls', body['reply'])
-            self.assertEqual(body['proposed_expenses'], [])
+        with patch.object(main.llm_coach, 'chat_reply', side_effect=RuntimeError('provider unavailable')):
+            status, body, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'Hello'})
+        self.assertEqual(status, 200)
+        self.assertIn("Coco's AI is temporarily unavailable", body['reply'])
+        self.assertIn('no transactions or budgets recorded', body['reply'])
+        self.assertNotIn('Using your saved records', body['reply'])
+        self.assertEqual(body['proposed_expenses'], [])
     def test_ai_timeout_and_output_limits_without_network(self):
         from unittest.mock import patch, MagicMock
         import llm_coach
         model = MagicMock(); model.generate_content.return_value.text = 'x' * 10000
         generate = model.generate_content
         with patch.object(llm_coach, '_ensure_configured'), patch.object(llm_coach, 'genai', MagicMock(GenerativeModel=MagicMock(return_value=model))):
-            self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [], reserve_call=MagicMock())), 8000)
+            self.assertEqual(len(llm_coach.get_coaching_advice('Test', 0, [])), 8000)
             kwargs = generate.call_args.kwargs
             self.assertEqual(kwargs['request_options']['timeout'], 20)
             self.assertEqual(kwargs['generation_config']['max_output_tokens'], 1200)
@@ -229,11 +222,14 @@ class Regressions(unittest.TestCase):
         self.assertEqual(len(self.call(client, f'/coach/history/{uid}')[1]), 6)
         self.assertEqual(len(self.call(client, f'/transactions/{uid}')[1]), 1)
 
-    def test_gemini_daily_quota_shared_across_features_and_owned_accounts(self):
+    def test_gemini_has_no_daily_cap_across_features_and_owned_accounts(self):
         from unittest.mock import patch
         from types import SimpleNamespace
         client, uid = self.signup('daily-quota')
         other, oid = self.signup('other-quota')
+        with SessionLocal() as db:
+            db.add_all([models.GeminiCall(user_id=uid, called_at=datetime.utcnow()) for _ in range(4)])
+            db.commit()
         requests = []
         class Model:
             def __init__(self, *args, **kwargs): pass
@@ -250,20 +246,20 @@ class Regressions(unittest.TestCase):
             self.assertEqual(self.call(client, f'/savings-goal/{uid}', {'target_amount': 100, 'months': 2})[0], 200)
             status, result, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'How much is left?'})
             self.assertEqual(status, 200)
-            self.assertIn('four Gemini calls', result['reply'])
-            self.assertEqual(len(requests), 4)
-            self.assertEqual(self.call(other, f'/coach/{oid}')[0], 200)
+            self.assertEqual(result['reply'], 'Advice')
             self.assertEqual(len(requests), 5)
+            self.assertEqual(self.call(other, f'/coach/{oid}')[0], 200)
+            self.assertEqual(len(requests), 6)
             self.call(client, '/auth/logout', {}, 'POST')
             self.assertEqual(self.call(client, '/auth/login', {'email': 'daily-quota@example.com', 'password': 'long-test-password'})[0], 200)
             status, result, _ = self.call(client, f'/coach/{uid}')
             self.assertEqual(status, 200)
-            self.assertIn('four Gemini calls', result['advice'])
-            self.assertEqual(len(requests), 5, 'Signing in again must not reset the account quota')
+            self.assertEqual(result['advice'], 'Advice')
+            self.assertEqual(len(requests), 7)
         with SessionLocal() as db:
             self.assertEqual(db.query(models.GeminiCall).filter_by(user_id=uid).count(), 4)
 
-    def test_quota_reservations_survive_chat_proposal_rollback(self):
+    def test_expense_tool_can_finish_after_four_provider_calls(self):
         from unittest.mock import patch
         from types import SimpleNamespace
         client, uid = self.signup('quota-rollback')
@@ -282,12 +278,12 @@ class Regressions(unittest.TestCase):
                 genai=SimpleNamespace(GenerativeModel=Model), _unavailable_until={}):
             status, result, _ = self.call(client, f'/coach/chat/{uid}', {'message': 'I spent 25 on lunch'})
         self.assertEqual(status, 200)
-        self.assertEqual(result['proposed_expenses'], [])
-        self.assertIn('four Gemini calls', result['reply'])
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(result['proposed_expenses']), 1)
+        self.assertEqual(result['reply'], 'Advice')
+        self.assertEqual(len(requests), 5)
         with SessionLocal() as db:
-            self.assertEqual(db.query(models.GeminiCall).filter_by(user_id=uid).count(), 4)
-            self.assertEqual(db.query(models.ExpenseProposal).filter_by(user_id=uid).count(), 0)
+            self.assertEqual(db.query(models.GeminiCall).filter_by(user_id=uid).count(), 0)
+            self.assertEqual(db.query(models.ExpenseProposal).filter_by(user_id=uid).count(), 1)
             self.assertEqual(db.query(models.Transaction).filter_by(user_id=uid).count(), 0)
     def test_full_persistent_account_flow_and_isolation(self):
         from unittest.mock import patch

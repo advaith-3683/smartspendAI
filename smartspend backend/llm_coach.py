@@ -5,7 +5,6 @@ import time
 import logging
 import re
 from startup_telemetry import startup_stage
-from ai_quota import GeminiDailyLimitReached
 
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or '').strip()
 MODEL_NAME = (os.getenv("GEMINI_MODEL") or 'gemini-flash-lite-latest').strip() or 'gemini-flash-lite-latest'
@@ -38,9 +37,6 @@ def _generate(operation, can_retry=lambda: True):
             if not text or not text.strip():
                 raise ValueError('Empty AI response')
             return text.strip()[:8000]
-        except GeminiDailyLimitReached:
-            # Account quota is not a provider outage and must not trigger failover.
-            raise
         except Exception as error:
             last_error = error
             logger.warning('Coco provider attempt failed: model=%s error=%s', name, type(error).__name__)
@@ -49,27 +45,6 @@ def _generate(operation, can_retry=lambda: True):
             if not can_retry():
                 break
     raise RuntimeError('Coco is using recorded-data guidance') from last_error
-
-
-def _metered_model(name, reserve_call, **kwargs):
-    if reserve_call is None:
-        raise RuntimeError('Gemini calls require an account quota guard')
-    model = genai.GenerativeModel(name, **kwargs)
-    generate = model.generate_content
-    def guarded_generate(*args, **options):
-        # ChatSession's automatic tool loop calls this method again on every RPC.
-        reserve_call()
-        return generate(*args, **options)
-    model.generate_content = guarded_generate
-    return model
-
-
-def quota_notice(error):
-    if isinstance(error, GeminiDailyLimitReached):
-        return ('Your account has used its four Gemini calls in the last 24 hours '
-                '(including failed requests and tool follow-up calls). '
-                'Basic guidance remains available until a call slot opens. ')
-    return ''
 
 
 def recorded_guidance(user_name, monthly_income, pace_data, total_spent=None,
@@ -178,10 +153,10 @@ def build_prompt(user_name: str, monthly_income: float, pace_data: list[dict]) -
     return "\n".join(lines)
 
 
-def get_coaching_advice(user_name: str, monthly_income: float, pace_data: list[dict], *, reserve_call=None) -> str:
+def get_coaching_advice(user_name: str, monthly_income: float, pace_data: list[dict]) -> str:
     _ensure_configured()
     prompt = build_prompt(user_name, monthly_income, pace_data)
-    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+    return _generate(lambda name: genai.GenerativeModel(name).generate_content(
         prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
@@ -239,10 +214,10 @@ def build_digest_prompt(user_name: str, digest: dict) -> str:
     return "\n".join(lines)
 
 
-def get_weekly_digest(user_name: str, digest: dict, *, reserve_call=None) -> str:
+def get_weekly_digest(user_name: str, digest: dict) -> str:
     _ensure_configured()
     prompt = build_digest_prompt(user_name, digest)
-    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+    return _generate(lambda name: genai.GenerativeModel(name).generate_content(
         prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
@@ -288,10 +263,10 @@ def build_goal_prompt(user_name: str, plan: dict) -> str:
     return "\n".join(lines)
 
 
-def get_goal_advice(user_name: str, plan: dict, *, reserve_call=None) -> str:
+def get_goal_advice(user_name: str, plan: dict) -> str:
     _ensure_configured()
     prompt = build_goal_prompt(user_name, plan)
-    return _generate(lambda name: _metered_model(name, reserve_call).generate_content(
+    return _generate(lambda name: genai.GenerativeModel(name).generate_content(
         prompt, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS))
 
 
@@ -389,7 +364,6 @@ def chat_reply(
     anomalies: list[dict] | None = None,
     subscriptions: list[dict] | None = None,
     log_expense_fn=None,
-    *, reserve_call=None,
 ) -> str:
     """Continue a multi-turn conversation with Coco, grounded in live budget data.
 
@@ -420,7 +394,7 @@ def chat_reply(
     ]
 
     def send(name):
-        model = _metered_model(name, reserve_call, system_instruction=system_context, tools=tools)
+        model = genai.GenerativeModel(name, system_instruction=system_context, tools=tools)
         chat = model.start_chat(history=chat_history,
                                 enable_automatic_function_calling=bool(log_expense_fn))
         return chat.send_message(message, generation_config=GENERATION_CONFIG, request_options=REQUEST_OPTIONS)
